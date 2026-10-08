@@ -1,4 +1,4 @@
-f9b7e9bae24b1e3a8724f5831e4d47ff240c88f610426f6e55749065f7ff025b  download/nai-lens-studio-v2.7-standalone.html
-1f34101fbe746a88febdd180df861a60191c6863ecf19423cd3ef64d3b34741c  assets/nai-studio.js
+f8a9d881ebf03323d448085935ac8bb160ca091198a8a5f82ae490d412b88617  download/nai-lens-studio-v2.10-standalone.html
+dc53c008ab98e317713e52e763d8d54abe0300c50f2dbf01e8b175479ec5383e  assets/nai-studio.js
 acc7e41455a80765b5fd9c7ee1b8078a6d160bbbca455aeae854de65c947d59e  assets/jszip.min.js
 3d29c2d614b4e682eab7800b9cb9298d2668005dcb5f0cd1259c9ba72dc25e66  assets/nai-title.ttf
