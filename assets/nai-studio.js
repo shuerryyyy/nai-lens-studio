@@ -40,6 +40,37 @@ let artworkSelectionMode = false;
 let selectedArtworkIds = new Set();
 let batchMoveActive = false;
 let currentLibraryFilter = { type: 'all', value: '', label: '全部图片' };
+let libraryResultsCollapsed = false;
+let imagePreviewUrl = '';
+let importPreviewUrl = '';
+let generationController = null;
+let restoreInProgress = false;
+const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
+const WORD_KINDS = ['scene', 'artist', 'positive', 'negative', 'bundle'];
+
+function normalizeLibraryRecord(record, type, strict = false) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('备份中存在无效记录');
+  const result = { ...record };
+  result.id = String(record.id ?? makeId());
+  for (const key of ['name', 'content', 'fullPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'scenePrompt', 'characterPrompt', 'sourcePrompt', 'title', 'category', 'note', 'sourceUrl', 'transferId', 'recipeId', 'characterId', 'model', 'size', 'sampler', 'noiseSchedule', 'gender', 'hair', 'eyes', 'skin', 'body', 'features', 'outfit', 'naturalAppearance']) {
+    if (key in result && typeof result[key] !== 'string') result[key] = String(result[key] ?? '');
+  }
+  result.tags = Array.isArray(record.tags) ? record.tags.filter(tag => typeof tag === 'string') : splitTags(record.tags);
+  if (Array.isArray(record.characterIds)) result.characterIds = record.characterIds.map(String);
+  if (type === 'word') {
+    if (!WORD_KINDS.includes(record.kind) && strict) throw new Error('备份包含不支持的散词类型');
+    result.kind = WORD_KINDS.includes(record.kind) ? record.kind : 'artist';
+    if (result.bundle && typeof result.bundle === 'object') result.bundle = Object.fromEntries(['artistPrompt', 'positivePrompt', 'negativePrompt'].map(key => [key, String(result.bundle[key] ?? '')]));
+  }
+  return result;
+}
+
+function readLocalLibrary(key, type) {
+  try {
+    const list = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(list) ? list.filter(item => item && typeof item === 'object').map(item => normalizeLibraryRecord(item, type)) : [];
+  } catch { return []; }
+}
 
 const fields = [
   'scenePrompt', 'characterPrompt', 'characterSelectIds', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model',
@@ -144,6 +175,20 @@ document.querySelectorAll('[data-close-dialog]').forEach(button => {
 });
 
 document.querySelectorAll('dialog').forEach(dialog => {
+  dialog.addEventListener('close', () => {
+    if (dialog.open) return;
+    if (dialog.id === 'imageDialog') {
+      if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+      imagePreviewUrl = '';
+      $('imageDialogPreview').removeAttribute('src');
+    }
+    if (dialog.id === 'imageImportDialog') {
+      if (importPreviewUrl) URL.revokeObjectURL(importPreviewUrl);
+      importPreviewUrl = '';
+      pendingImport = null;
+      $('importPreview').removeAttribute('src');
+    }
+  });
   dialog.addEventListener('click', event => {
     if (event.target === dialog) dialog.close();
   });
@@ -404,9 +449,11 @@ function openDB() {
 
 function storeRequest(storeName, mode, operation) {
   return new Promise((resolve, reject) => {
-    const store = db.transaction(storeName, mode).objectStore(storeName);
-    const request = operation(store);
-    request.onsuccess = () => resolve(request.result);
+    const transaction = db.transaction(storeName, mode);
+    const request = operation(transaction.objectStore(storeName));
+    transaction.oncomplete = () => resolve(request.result);
+    transaction.onabort = () => reject(transaction.error || new Error('数据库写入已撤销，请检查存储空间'));
+    transaction.onerror = () => reject(transaction.error || request.error);
     request.onerror = () => reject(request.error);
   });
 }
@@ -419,7 +466,7 @@ const dbGet = (store, id) => storeRequest(store, 'readonly', objectStore => obje
 const dbAll = store => storeRequest(store, 'readonly', objectStore => objectStore.getAll());
 
 function characters() {
-  try { return JSON.parse(localStorage.getItem(CHARACTERS_KEY) || '[]'); } catch { return []; }
+  return readLocalLibrary(CHARACTERS_KEY, 'character');
 }
 
 function saveCharacters(list) {
@@ -435,6 +482,7 @@ const characterFieldLabels = {
 };
 
 function characterPrompt(character) {
+  if (!character) return '';
   if (character.fullPrompt?.trim()) return character.fullPrompt.trim();
   return Object.keys(characterFieldLabels).map(key => character[key]?.trim()).filter(Boolean).join(', ');
 }
@@ -580,7 +628,7 @@ $('clearCharacterLinks').onclick = () => {
 };
 
 function words() {
-  try { return JSON.parse(localStorage.getItem(WORDS_KEY) || '[]'); } catch { return []; }
+  return readLocalLibrary(WORDS_KEY, 'word');
 }
 
 function saveWords(list) {
@@ -650,7 +698,7 @@ function pickParams(source = {}) {
 }
 
 async function refreshData() {
-  recipesCache = (await dbAll('recipes')).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  recipesCache = (await dbAll('recipes')).map(item => normalizeLibraryRecord(item, 'recipe')).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   artworksCache = (await dbAll('artworks')).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   renderRecipeOptions();
   renderRecipes();
@@ -1096,8 +1144,26 @@ function libraryFilterGroup(title, type, entries, query) {
   if (!filtered.length) return '';
   return `<section class="library-filter-group"><h3>${escapeHTML(title)}</h3><div class="library-filter-list">${filtered.map(([name, count]) => {
     const active = currentLibraryFilter.type === type && currentLibraryFilter.value === name;
-    return `<button class="library-filter${active ? ' active' : ''}" data-library-type="${type}" data-library-value="${escapeHTML(name)}" type="button"><span>${escapeHTML(name)}</span><b>${count}</b></button>`;
+    const deleteButton = type === 'tag' ? `<button class="library-tag-delete" data-library-delete-tag="${escapeHTML(name)}" type="button" aria-label="删除图片标签 ${escapeHTML(name)}" title="删除图片标签">${icon('trash')}</button>` : '';
+    return `<div class="library-filter-row"><button class="library-filter${active ? ' active' : ''}" data-library-type="${type}" data-library-value="${escapeHTML(name)}" type="button"><span>${escapeHTML(name)}</span><b>${count}</b></button>${deleteButton}</div>`;
   }).join('')}</div></section>`;
+}
+
+async function deleteLibraryTag(tag) {
+  const affected = artworksCache.filter(item => (item.tags || []).includes(tag));
+  if (!affected.length) return;
+  if (!confirm(`删除图片标签“${tag}”？\n\n它会从 ${affected.length} 张图片中移除，但不会删除图片。`)) return;
+  for (const item of affected) {
+    item.tags = (item.tags || []).filter(value => value !== tag);
+    item.updatedAt = Date.now();
+    await dbPut('artworks', item);
+  }
+  if (currentLibraryFilter.type === 'tag' && currentLibraryFilter.value === tag) {
+    currentLibraryFilter = { type: 'all', value: '', label: '全部图片' };
+    libraryResultsCollapsed = false;
+  }
+  await refreshData();
+  toast(`已从 ${affected.length} 张图片中删除标签“${tag}”`);
 }
 
 function artworkMatchesLibraryFilter(item) {
@@ -1131,12 +1197,21 @@ function renderImageLibrary() {
   const favoriteActive = currentLibraryFilter.type === 'favorite';
   filterList.innerHTML = `<div class="library-filter-list"><button class="library-filter${allActive ? ' active' : ''}" data-library-type="all" data-library-value="" type="button"><span>全部图片</span><b>${artworksCache.length}</b></button><button class="library-filter${favoriteActive ? ' active' : ''}" data-library-type="favorite" data-library-value="" type="button"><span>收藏图片</span><b>${favoriteCount}</b></button></div>${libraryFilterGroup('人物', 'character', characterCounts, query)}${libraryFilterGroup('图片标签', 'tag', tagCounts, query)}${libraryFilterGroup('配方分类', 'category', categoryCounts, query)}`;
   filterList.querySelectorAll('[data-library-type]').forEach(button => button.onclick = () => {
-    currentLibraryFilter = {
-      type: button.dataset.libraryType,
-      value: button.dataset.libraryValue,
-      label: button.dataset.libraryType === 'all' ? '全部图片' : button.dataset.libraryType === 'favorite' ? '收藏图片' : button.dataset.libraryValue
-    };
+    const sameFilter = currentLibraryFilter.type === button.dataset.libraryType && currentLibraryFilter.value === button.dataset.libraryValue;
+    if (matchMedia('(max-width:760px)').matches && sameFilter && !libraryResultsCollapsed) libraryResultsCollapsed = true;
+    else {
+      currentLibraryFilter = {
+        type: button.dataset.libraryType,
+        value: button.dataset.libraryValue,
+        label: button.dataset.libraryType === 'all' ? '全部图片' : button.dataset.libraryType === 'favorite' ? '收藏图片' : button.dataset.libraryValue
+      };
+      libraryResultsCollapsed = false;
+    }
     renderImageLibrary();
+  });
+  filterList.querySelectorAll('[data-library-delete-tag]').forEach(button => button.onclick = () => deleteLibraryTag(button.dataset.libraryDeleteTag));
+  filterList.querySelectorAll('[data-library-type]').forEach(button => {
+    button.setAttribute('aria-expanded', String(button.classList.contains('active') && !libraryResultsCollapsed));
   });
   let images = artworksCache.filter(artworkMatchesLibraryFilter).filter(item => !query || [
     artworkSearchText(item), ...artworkCharacterNames(item)
@@ -1149,18 +1224,24 @@ function renderImageLibrary() {
   $('librarySelectBtn').onclick = () => setArtworkSelectionMode(!artworkSelectionMode);
   $('libraryBatchBar').innerHTML = batchBarHTML(images.map(item => item.id));
   bindBatchBar($('libraryBatchBar'), images.map(item => item.id));
+  imageGrid.classList.toggle('single-row', images.length > 0 && images.length <= 3);
   imageGrid.innerHTML = images.length ? images.map(item => {
     const url = URL.createObjectURL(item.blob);
     libraryUrls.push(url);
-    const people = artworkCharacterNames(item);
-    const subtitle = [...people, ...(item.tags || [])].slice(0, 3).join(' · ') || item.category || '未分类';
-    return `<button class="library-image${selectedArtworkIds.has(String(item.id)) ? ' selected' : ''}" data-library-image="${item.id}" type="button">${selectionMark(item)}<img loading="lazy" decoding="async" src="${url}" alt="${escapeHTML(item.title || '生成图片')}"><span class="library-image-body"><b>${item.favorite ? `${icon('star')} ` : ''}${escapeHTML(item.title || '未命名镜头')}</b><span>${escapeHTML(subtitle)}</span></span></button>`;
+    const title = item.title || '未命名镜头';
+    const favoriteMark = item.favorite ? `<span class="library-favorite-mark" aria-label="已收藏">${icon('star')}</span>` : '';
+    return `<button class="library-image${selectedArtworkIds.has(String(item.id)) ? ' selected' : ''}" data-library-image="${item.id}" type="button" aria-label="${artworkSelectionMode ? '选择' : '查看'}${escapeHTML(title)}" title="${escapeHTML(title)}">${selectionMark(item)}${favoriteMark}<img loading="lazy" decoding="async" src="${url}" alt="${escapeHTML(title)}"></button>`;
   }).join('') : '<div class="empty"><div><b>这个分类里还没有图片</b><span>生成图片后添加标签，或从人物库选择角色再生成。</span></div></div>';
   imageGrid.classList.toggle('selection-mode', artworkSelectionMode);
   imageGrid.querySelectorAll('[data-library-image]').forEach(button => button.onclick = () => artworkSelectionMode ? toggleArtworkSelection(button.dataset.libraryImage) : openImageDialog(artworksCache.find(item => item.id === Number(button.dataset.libraryImage))));
-  if (matchMedia('(max-width:760px)').matches) {
+  const results = $('libraryResults');
+  results.hidden = false;
+  if (matchMedia('(max-width:760px)').matches && libraryResultsCollapsed) {
+    results.hidden = true;
+    restoreLibraryResultsHome();
+  } else if (matchMedia('(max-width:760px)').matches) {
     const active = filterList.querySelector('.library-filter.active');
-    if (active) active.after($('libraryResults'));
+    if (active) (active.closest('.library-filter-row') || active).after(results);
   }
 }
 
@@ -1170,7 +1251,9 @@ function openImageDialog(item) {
   const recipe = recipesCache.find(value => value.id === item.recipeId);
   $('imageDialogTitle').textContent = item.title || '图片记录';
   $('imageDialogMeta').textContent = `${recipe?.name || '未分类'} · ${shortModel(item.model || '未知模型')} · ${item.size || '未知尺寸'}`;
-  $('imageDialogPreview').src = URL.createObjectURL(item.blob);
+  if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+  imagePreviewUrl = URL.createObjectURL(item.blob);
+  $('imageDialogPreview').src = imagePreviewUrl;
   $('imageTags').value = (item.tags || []).join(', ');
   const people = artworkCharacterNames(item);
   $('imageParameterStrip').innerHTML = [
@@ -1301,7 +1384,8 @@ function triggerBlobDownload(blob, filename) {
 }
 
 function downloadArtwork(item) {
-  triggerBlobDownload(item.blob, `NAI_${item.id}_${safeFilenamePart(item.model)}.png`);
+  const extension = item.blob.type === 'image/jpeg' ? 'jpg' : item.blob.type === 'image/webp' ? 'webp' : 'png';
+  triggerBlobDownload(item.blob, `NAI_${item.id}_${safeFilenamePart(item.model)}.${extension}`);
   toast('开始下载保留元数据的原图');
 }
 
@@ -1464,7 +1548,7 @@ document.querySelectorAll('[data-pick]').forEach(button => button.onclick = () =
 document.querySelectorAll('[data-recipe-pick]').forEach(button => button.onclick = () => openPicker(button.dataset.recipePick, `recipe${button.dataset.recipePick[0].toUpperCase()}${button.dataset.recipePick.slice(1)}`));
 
 function kindName(kind) {
-  return ({ scene: '画面描述词', artist: '画师串', positive: '正面词', negative: '负面词', bundle: '整套配方' })[kind] || kind;
+  return ({ scene: '画面描述词', artist: '画师串', positive: '正面词', negative: '负面词', bundle: '整套配方' })[kind] || '散词';
 }
 
 function renderWords() {
@@ -1483,13 +1567,13 @@ function renderWords() {
       ? `<div class="word-summary"><span>画师：${escapeHTML(bundle.artistPrompt || '—')}</span><span>正面：${escapeHTML(bundle.positivePrompt || '—')}</span><span>负面：${escapeHTML(bundle.negativePrompt || '—')}</span></div>`
       : `<p>${escapeHTML(word.content || '')}</p>`;
     const copyActions = bundle
-      ? `<button class="secondary" data-bundle-copy="artistPrompt" data-word-id="${word.id}" type="button">画师</button><button class="secondary" data-bundle-copy="positivePrompt" data-word-id="${word.id}" type="button">正面</button><button class="secondary" data-bundle-copy="negativePrompt" data-word-id="${word.id}" type="button">负面</button>`
-      : `<button class="copy-btn" data-word-copy="${word.id}" aria-label="复制${escapeHTML(word.name)}">${icon('copy')}</button>`;
+      ? `<button class="secondary" data-bundle-copy="artistPrompt" data-word-id="${escapeHTML(word.id)}" type="button">画师</button><button class="secondary" data-bundle-copy="positivePrompt" data-word-id="${escapeHTML(word.id)}" type="button">正面</button><button class="secondary" data-bundle-copy="negativePrompt" data-word-id="${escapeHTML(word.id)}" type="button">负面</button>`
+      : `<button class="copy-btn" data-word-copy="${escapeHTML(word.id)}" aria-label="复制${escapeHTML(word.name)}">${icon('copy')}</button>`;
     const safeSource = safeHttpUrl(word.sourceUrl);
     const provenance = word.note || word.sourceUrl
       ? `<div class="word-provenance">${word.note ? `<span title="${escapeHTML(word.note)}">备注：${escapeHTML(word.note)}</span>` : ''}${safeSource ? `<a class="source-link" href="${escapeHTML(safeSource)}" target="_blank" rel="noopener noreferrer">打开来源</a>` : word.sourceUrl ? `<span>来源：${escapeHTML(word.sourceUrl)}</span>` : ''}</div>`
       : '';
-    return `<article class="word-row${expandedWordId === String(word.id) ? ' expanded' : ''}"><button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" aria-expanded="${expandedWordId === String(word.id)}"><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${word.id}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${word.id}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${word.id}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${word.id}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
+    return `<article class="word-row${expandedWordId === String(word.id) ? ' expanded' : ''}"><button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" aria-expanded="${expandedWordId === String(word.id)}"><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${escapeHTML(word.id)}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${escapeHTML(word.id)}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
   }).join('') : '<div class="empty"><div><b>散词库还是空的</b><span>保存单独词条，或用结构化表单保存整套配方。</span></div></div>';
   document.querySelectorAll('[data-word-copy]').forEach(button => button.onclick = () => {
     const word = words().find(item => item.id === button.dataset.wordCopy);
@@ -1639,7 +1723,8 @@ function randomSeed() {
 
 function naiRequest(meta) {
   const [width, height] = meta.size.split('x').map(Number);
-  const seed = meta.seed ? Number(meta.seed) : randomSeed();
+  const seed = meta.seed !== '' && meta.seed != null ? Number(meta.seed) : randomSeed();
+  meta.seed = String(seed);
   const isV5 = meta.model.startsWith('nai-diffusion-5-');
   const caption = prompt => ({ base_caption: prompt, char_captions: [] });
   return {
@@ -1661,59 +1746,105 @@ function naiRequest(meta) {
 }
 
 function proxyRequest(meta) {
+  if (meta.seed === '' || meta.seed == null) meta.seed = String(randomSeed());
   return {
     model: meta.model, prompt: meta.fullPrompt, negative_prompt: meta.negativePrompt,
     size: meta.size, n: 1, steps: meta.steps, scale: meta.scale,
-    sampler: meta.sampler, seed: meta.seed ? Number(meta.seed) : undefined
+    sampler: meta.sampler, seed: Number(meta.seed), noise_schedule: meta.noiseSchedule,
+    ...(meta.transparentBg ? { transparent_background: true } : {})
   };
 }
 
 async function b64Blob(base64) {
+  if (typeof base64 !== 'string' || base64.length > MAX_IMAGE_BYTES * 1.4) throw new Error('图片数据无效或超过 64 MB 限制');
+  const mime = /^data:(image\/(?:png|jpeg|webp));base64,/i.exec(base64)?.[1].toLowerCase() || 'image/png';
   const clean = base64.replace(/^data:[^;]+;base64,/, '');
   const binary = atob(clean);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  return new Blob([bytes], { type: 'image/png' });
+  return new Blob([bytes], { type: mime });
 }
 
 async function parseImageResponse(response, mode) {
+  if (!response.ok) throw new Error(explainHttpError(response.status));
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   if (contentType.includes('json')) {
-    const data = await response.json();
+    const data = JSON.parse(new TextDecoder().decode(await readLimitedResponse(response, MAX_IMAGE_BYTES * 1.4)));
     const item = data?.data?.[0] || data;
-    if (item?.b64_json) return b64Blob(item.b64_json);
-    if (item?.url) return (await fetch(item.url)).blob();
+    if (item?.b64_json) return validateGeneratedImage(await b64Blob(item.b64_json));
+    if (item?.url) return downloadGeneratedImage(item.url);
     throw new Error(data?.message || data?.error?.message || '返回中没有图片数据');
   }
-  if (contentType.includes('zip') || mode === 'official') {
+  if (contentType.includes('zip') || (mode === 'official' && !contentType.startsWith('image/'))) {
     if (typeof JSZip === 'undefined') throw new Error('ZIP 解析组件未加载');
     try {
-      const zip = await JSZip.loadAsync(await response.arrayBuffer());
+      const zip = await JSZip.loadAsync(await readLimitedResponse(response));
       const name = Object.keys(zip.files).find(fileName => /\.(png|webp)$/i.test(fileName));
       if (!name) throw new Error('压缩包中没有图片');
-      return zip.files[name].async('blob');
+      const entry = zip.files[name];
+      if (entry._data?.uncompressedSize > MAX_IMAGE_BYTES) throw new Error('图片超过 64 MB 限制');
+      return validateGeneratedImage(await entry.async('blob'));
     } catch (error) {
       if (error.message.includes('图片')) throw error;
       throw new Error('无法解析 NovelAI 返回的图片包');
     }
   }
   if (contentType.includes('text/event-stream') || contentType.includes('text/plain')) {
-    const raw = await response.text();
+    const raw = new TextDecoder().decode(await readLimitedResponse(response, MAX_IMAGE_BYTES * 1.4));
     const candidates = raw.split(/\r?\n/).map(line => line.replace(/^data:\s*/, '').trim()).filter(Boolean);
     for (const candidate of candidates.reverse()) {
       try {
         const data = JSON.parse(candidate);
         const item = data?.data?.[0] || data?.image || data;
         const base64 = item?.b64_json || item?.base64 || item?.image_base64;
-        if (base64) return b64Blob(base64);
-        if (item?.url) return (await fetch(item.url)).blob();
+        if (base64) return validateGeneratedImage(await b64Blob(base64));
+        if (item?.url) return downloadGeneratedImage(item.url);
       } catch {}
     }
     const base64Match = raw.match(/(?:b64_json|image_base64|base64)["']?\s*[:=]\s*["']([A-Za-z0-9+/=]{100,})/i);
-    if (base64Match) return b64Blob(base64Match[1]);
+    if (base64Match) return validateGeneratedImage(await b64Blob(base64Match[1]));
     throw new Error('站点返回了流式文本，但没有找到可识别的图片数据');
   }
-  return response.blob();
+  return validateGeneratedImage(new Blob([await readLimitedResponse(response)], { type: contentType }));
+}
+
+async function readLimitedResponse(response, limit = MAX_IMAGE_BYTES) {
+  if (Number(response.headers.get('content-length')) > limit) throw new Error('返回数据超过大小限制');
+  const reader = response.body?.getReader();
+  if (!reader) return new ArrayBuffer(0);
+  const parts = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) { await reader.cancel(); throw new Error('返回数据超过大小限制'); }
+      parts.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  return new Blob(parts).arrayBuffer();
+}
+
+async function validateGeneratedImage(blob) {
+  if (!blob.size || blob.size > MAX_IMAGE_BYTES) throw new Error('返回图片为空或超过 64 MB 限制');
+  const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+  const png = [137,80,78,71,13,10,26,10].every((byte, i) => head[i] === byte);
+  const jpeg = head[0] === 255 && head[1] === 216 && head[2] === 255;
+  const webp = String.fromCharCode(...head.slice(0,4)) === 'RIFF' && String.fromCharCode(...head.slice(8,12)) === 'WEBP';
+  if (!png && !jpeg && !webp) throw new Error('接口返回的不是有效 PNG、JPG 或 WebP 图片，未归档');
+  const image = new Blob([blob], { type: png ? 'image/png' : jpeg ? 'image/jpeg' : 'image/webp' });
+  try { const bitmap = await imageSourceFromBlob(image); if (bitmap.close) bitmap.close(); }
+  catch { throw new Error('接口返回的图片已损坏，未归档'); }
+  return image;
+}
+
+async function downloadGeneratedImage(value) {
+  const url = safeHttpUrl(value);
+  if (!url) throw new Error('返回的图片链接不是 HTTP/HTTPS 地址');
+  const response = await fetch(url, { signal: generationController?.signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
+  if (!response.ok) throw new Error(`图片下载失败：HTTP ${response.status}`);
+  return validateGeneratedImage(new Blob([await readLimitedResponse(response)]));
 }
 
 function explainHttpError(status, raw = '', mode = $('apiMode')?.value || 'proxy') {
@@ -1752,7 +1883,20 @@ $('generateBtn').onclick = async () => {
     $('scenePrompt').focus();
     return;
   }
+  if (meta.seed !== '' && (!/^\d+$/.test(meta.seed) || Number(meta.seed) > 4294967295)) {
+    setStatus('Seed 无效', 'err', '请留空使用随机值，或填写 0–4294967295 的整数。');
+    $('seed').focus();
+    return;
+  }
   const button = $('generateBtn');
+  if (generationController) return;
+  generationController = new AbortController();
+  const controller = generationController;
+  let timedOut = false;
+  let generatedBlob = null;
+  let savedArtworkId = null;
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 180000);
+  $('cancelGenerateBtn').hidden = false;
   button.disabled = true;
   button.querySelector('span').textContent = '正在生成';
   document.querySelector('.result-sheet').classList.add('generating');
@@ -1761,12 +1905,35 @@ $('generateBtn').onclick = async () => {
     const mode = $('apiMode').value;
     const response = await fetch($('endpoint').value.trim(), {
       method: 'POST',
+      signal: controller.signal,
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, image/png, application/zip' },
       body: JSON.stringify(mode === 'official' ? naiRequest(meta) : proxyRequest(meta))
     });
     if (!response.ok) throw new Error(explainHttpError(response.status, await response.text(), mode));
     const blob = await parseImageResponse(response, mode);
+    if (controller.signal.aborted) throw new DOMException('已停止等待', 'AbortError');
+    generatedBlob = blob;
+    meta.requestedSeed = meta.seed;
+    meta.seedSource = 'requested';
+    if (blob.type === 'image/png') {
+      try {
+        const returned = extractNovelAIMetadata(await parsePNG(blob));
+        if (returned.seed !== '') { meta.seed = returned.seed; meta.seedSource = 'image-metadata'; }
+      } catch { /* Metadata is optional; image decoding has already succeeded. */ }
+    }
+    if (latestUrl) URL.revokeObjectURL(latestUrl);
+    latestUrl = URL.createObjectURL(blob);
+    latestArtwork = { ...meta, blob };
+    $('resultImage').src = latestUrl;
+    $('resultImage').hidden = false;
+    $('emptyStage').hidden = true;
+    $('downloadLatest').href = latestUrl;
+    $('downloadLatest').download = `NAI_${Date.now()}_${safeFilenamePart(meta.model)}.${blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png'}`;
+    $('downloadLatest').hidden = false;
+    $('downloadLatestJpeg').hidden = false;
     const id = await dbAdd('artworks', { ...meta, blob, createdAt: Date.now(), imported: false });
+    savedArtworkId = id;
+    latestArtwork.id = id;
     if (meta.recipeId) {
       const recipe = await dbGet('recipes', meta.recipeId);
       if (recipe) {
@@ -1776,28 +1943,38 @@ $('generateBtn').onclick = async () => {
         await dbPut('recipes', recipe);
       }
     }
-    if (latestUrl) URL.revokeObjectURL(latestUrl);
-    latestUrl = URL.createObjectURL(blob);
-    latestArtwork = { id, ...meta, blob };
-    $('resultImage').src = latestUrl;
-    $('resultImage').hidden = false;
-    $('emptyStage').hidden = true;
-    $('downloadLatest').href = latestUrl;
-    $('downloadLatest').download = `NAI_${id}_${meta.model}.png`;
-    $('downloadLatest').hidden = false;
-    $('downloadLatestJpeg').hidden = false;
-    setStatus('生成成功，已归档', 'ok', `${meta.category} · ${meta.tags.join(' / ') || '无标签'}`);
+    setStatus('生成成功，已归档', 'ok', `${meta.category} · ${meta.tags.join(' / ') || '无标签'}${meta.seedSource === 'requested' ? ' · Seed 为请求值，图片未提供实际值' : ''}`);
     await refreshData();
     toast('图片与当次完整参数已保存');
   } catch (error) {
+    if (generatedBlob) {
+      setStatus(savedArtworkId ? '图片已保存，配方更新未完成' : '图片已生成，但归档失败', 'err', `请先下载当前图片，不要重复生成。${error.message}`);
+      if (savedArtworkId) await refreshData().catch(() => {});
+      return;
+    }
+    if (controller.signal.aborted) {
+      setStatus(timedOut ? '等待超时' : '已停止等待', 'err', '服务端可能仍在生成或扣费，请先检查服务商记录，不要立即重复提交。');
+      return;
+    }
     const cors = /Failed to fetch|NetworkError/i.test(error.message);
     setStatus('生成失败', 'err', cors ? '浏览器可能拦截了官方跨域请求，请改用可信反代。' : error.message);
   } finally {
+    clearTimeout(timeout);
+    generationController = null;
+    $('cancelGenerateBtn').hidden = true;
     button.disabled = false;
     button.querySelector('span').textContent = '生成并归档';
     document.querySelector('.result-sheet').classList.remove('generating');
   }
 };
+$('cancelGenerateBtn').onclick = () => generationController?.abort();
+
+matchMedia('(max-width:760px)').addEventListener('change', () => {
+  if (!db) return;
+  if (!matchMedia('(max-width:760px)').matches) libraryResultsCollapsed = false;
+  renderImageLibrary();
+  if (currentGalleryRecipeId) inspectRecipe(recipesCache.find(item => item.id === currentGalleryRecipeId), false);
+});
 
 function readNullTerminated(bytes, start) {
   let end = start;
@@ -1808,7 +1985,7 @@ function readNullTerminated(bytes, start) {
 async function inflateText(bytes) {
   if (typeof DecompressionStream === 'undefined') return '';
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
-  return new TextDecoder('utf-8').decode(await new Response(stream).arrayBuffer());
+  return new TextDecoder('utf-8').decode(await readLimitedResponse(new Response(stream), 2 * 1024 * 1024));
 }
 
 function decodeText(bytes) {
@@ -1816,20 +1993,23 @@ function decodeText(bytes) {
 }
 
 async function parsePNG(file) {
+  if (file.size > MAX_IMAGE_BYTES) throw new Error('PNG 超过 64 MB 限制');
   const buffer = await file.arrayBuffer();
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
   if (!signature.every((value, index) => bytes[index] === value)) throw new Error('请选择 PNG 图片');
-  const text = {};
+  const text = Object.create(null);
   let width = 0;
   let height = 0;
   let offset = 8;
   while (offset + 12 <= bytes.length) {
     const length = view.getUint32(offset);
+    if (offset + 12 + length > bytes.length) throw new Error('PNG 文件不完整');
     const type = new TextDecoder('ascii').decode(bytes.slice(offset + 4, offset + 8));
     const data = bytes.slice(offset + 8, offset + 8 + length);
     if (type === 'IHDR') {
+      if (length < 13) throw new Error('PNG 尺寸信息损坏');
       width = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0);
       height = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(4);
     }
@@ -1892,9 +2072,8 @@ function extractArtistPrompt(prompt) {
 
 function normalizeModel(value = '') {
   const model = String(value).toLowerCase();
-  if (model.includes('5') && model.includes('curated')) return 'nai-diffusion-5-curated';
-  if (model.includes('5')) return 'nai-diffusion-5-full';
   if (model.includes('4.5') || model.includes('4-5')) return model.includes('curated') ? 'nai-diffusion-4-5-curated' : 'nai-diffusion-4-5-full';
+  if (/(?:diffusion[\s-]*|\bv)5\b/.test(model)) return model.includes('curated') ? 'nai-diffusion-5-curated' : 'nai-diffusion-5-full';
   return model.includes('v3') || model.includes('diffusion-3') ? 'nai-diffusion-3' : '';
 }
 
@@ -1917,7 +2096,10 @@ function extractNovelAIMetadata(png) {
 
 async function beginImageImport(file, targetRecipeId = '') {
   pendingImport = { file, targetRecipeId, metadata: null };
-  $('importPreview').src = URL.createObjectURL(file);
+  const importing = pendingImport;
+  if (importPreviewUrl) URL.revokeObjectURL(importPreviewUrl);
+  importPreviewUrl = URL.createObjectURL(file);
+  $('importPreview').src = importPreviewUrl;
   $('importStatus').textContent = '正在读取 PNG 中的生成信息……';
   $('importArtist').value = '';
   $('importPositive').value = '';
@@ -1930,6 +2112,7 @@ async function beginImageImport(file, targetRecipeId = '') {
   showDialog('imageImportDialog');
   try {
     const png = await parsePNG(file);
+    if (pendingImport !== importing) return;
     const metadata = extractNovelAIMetadata(png);
     pendingImport.metadata = metadata;
     $('importArtist').value = metadata.artistPrompt;
@@ -1943,6 +2126,7 @@ async function beginImageImport(file, targetRecipeId = '') {
       ? '已读取图片内嵌信息；自动拆分后请确认三项内容。'
       : '图片中没有可识别的 NovelAI 提示词，可能经过截图或平台转码；仍可手动填写并归档。';
   } catch (error) {
+    if (pendingImport !== importing) return;
     $('importStatus').textContent = `解析失败：${error.message}。仍可手动填写配方后保存图片。`;
   }
 }
@@ -2219,6 +2403,7 @@ function prepareRecordPlan(incoming, existing, keyFn, type) {
   const byTransferId = new Map(existing.filter(item => item.transferId).map(item => [item.transferId, item]));
   const byContent = new Map(existing.map(item => [keyFn(item), item]).filter(([key]) => key));
   const usedIds = new Set(existing.map(item => String(item.id)));
+  const pendingIds = new Set();
   incoming.forEach(source => {
     const oldKey = String(source.id ?? '');
     const contentKey = keyFn(source);
@@ -2227,8 +2412,8 @@ function prepareRecordPlan(incoming, existing, keyFn, type) {
       if (oldKey) idMap.set(oldKey, matched.id);
       const merged = mergeRecord(matched, source, type);
       if (merged.changed) {
-        merges.push(merged.record);
-        if (contentKey) byContent.set(contentKey, merged.record);
+        Object.assign(matched, merged.record);
+        if (!pendingIds.has(String(matched.id)) && !merges.includes(matched)) merges.push(matched);
       } else skipped += 1;
       return;
     }
@@ -2242,6 +2427,9 @@ function prepareRecordPlan(incoming, existing, keyFn, type) {
     usedIds.add(String(newId));
     if (oldKey) idMap.set(oldKey, newId);
     additions.push(record);
+    pendingIds.add(String(newId));
+    byId.set(String(newId), record);
+    if (record.transferId) byTransferId.set(record.transferId, record);
     if (contentKey) byContent.set(contentKey, record);
   });
   return { idMap, additions, merges, skipped, conflicts };
@@ -2281,10 +2469,10 @@ function normalizeBackupPayload(input) {
   if (!recognized) throw new Error('没有找到图片、配方、人物或散词数据，请确认选择的是镜头台 JSON 备份');
   return {
     ...source,
-    artworks: artworkSource,
-    recipes: recipeSource.map(item => ({ ...item, artistPrompt: item.artistPrompt ?? item.artist ?? '', positivePrompt: item.positivePrompt ?? item.positive ?? '', negativePrompt: item.negativePrompt ?? item.negative ?? '' })),
-    words: wordSource.map(item => ({ ...item, kind: item.kind || item.type || 'artist', content: item.content ?? item.value ?? item.prompt ?? '' })),
-    characters: characterSource.map(item => ({ ...item, fullPrompt: item.fullPrompt ?? item.prompt ?? item.description ?? '' }))
+    artworks: artworkSource.map(item => normalizeLibraryRecord(item, 'artwork', true)),
+    recipes: recipeSource.map(item => normalizeLibraryRecord({ ...item, artistPrompt: item.artistPrompt ?? item.artist ?? '', positivePrompt: item.positivePrompt ?? item.positive ?? '', negativePrompt: item.negativePrompt ?? item.negative ?? '' }, 'recipe', true)),
+    words: wordSource.map(item => normalizeLibraryRecord({ ...item, kind: item.kind || item.type || 'artist', content: item.content ?? item.value ?? item.prompt ?? '' }, 'word', true)),
+    characters: characterSource.map(item => normalizeLibraryRecord({ ...item, fullPrompt: item.fullPrompt ?? item.prompt ?? item.description ?? '' }, 'character', true))
   };
 }
 
@@ -2301,26 +2489,32 @@ async function analyzeBackupImport(data) {
   const additions = [];
   const merges = [];
   let skipped = 0;
-  const byTransfer = new Map(existingArtworks.filter(item => item.transferId).map(item => [item.transferId, item]));
   const byHash = new Map();
   for (const item of existingArtworks) {
-    const hash = item.contentHash || await blobFingerprint(item.blob);
+    const hash = await blobFingerprint(item.blob);
     byHash.set(hash, item);
   }
   for (const source of data.artworks) {
     const blob = await b64Blob(source.blob);
-    const hash = source.contentHash || await blobFingerprint(blob);
-    const matched = (source.transferId && byTransfer.get(source.transferId)) || byHash.get(hash);
+    const hash = await blobFingerprint(blob);
+    const matched = byHash.get(hash);
     const oldKey = String(source.id ?? '');
     if (matched) {
-      if (oldKey) artworkIdMap.set(oldKey, matched.id);
-      const merged = mergeRecord(matched, { ...source, blob: matched.blob, contentHash: hash }, 'artwork');
-      if (merged.changed) merges.push(merged.record);
+      if (oldKey) {
+        if (matched._oldIds) matched._oldIds.push(oldKey);
+        else artworkIdMap.set(oldKey, matched.id);
+      }
+      const mappedSource = { ...source, characterIds: artworkCharacterIds(source).map(id => characterPlan.idMap.get(String(id)) || id), blob: matched.blob, contentHash: hash };
+      const merged = mergeRecord(matched, mappedSource, 'artwork');
+      if (merged.changed) {
+        Object.assign(matched, merged.record);
+        if (!matched._oldIds && !merges.includes(matched)) merges.push(matched);
+      }
       else skipped += 1;
       continue;
     }
     const mappedCharacterIds = artworkCharacterIds(source).map(id => characterPlan.idMap.get(String(id)) || id);
-    additions.push({ ...source, id: undefined, recipeId: recipePlan.idMap.get(String(source.recipeId || '')) || source.recipeId || '', characterIds: mappedCharacterIds, characterId: mappedCharacterIds[0] || '', blob, contentHash: hash, _oldId: oldKey });
+    additions.push({ ...source, id: undefined, recipeId: recipePlan.idMap.get(String(source.recipeId || '')) || source.recipeId || '', characterIds: mappedCharacterIds, characterId: mappedCharacterIds[0] || '', blob, contentHash: hash, _oldIds: oldKey ? [oldKey] : [] });
     byHash.set(hash, additions[additions.length - 1]);
   }
   const plans = { data, characterPlan, recipePlan, wordPlan, artworkPlan: { additions, merges, skipped, idMap: artworkIdMap } };
@@ -2337,6 +2531,12 @@ async function analyzeBackupImport(data) {
 }
 
 async function restoreBackupData(data, suppliedPlan = null) {
+  if (restoreInProgress) throw new Error('另一个备份正在恢复，请稍后再试');
+  restoreInProgress = true;
+  const previousCharacters = localStorage.getItem(CHARACTERS_KEY);
+  const previousWords = localStorage.getItem(WORDS_KEY);
+  let localWritten = false;
+  try {
   const plan = suppliedPlan || await analyzeBackupImport(data);
   const existingCharacters = characters();
   const existingWords = words();
@@ -2344,31 +2544,62 @@ async function restoreBackupData(data, suppliedPlan = null) {
     const map = new Map(merges.map(item => [String(item.id), item]));
     return existing.map(item => map.get(String(item.id)) || item);
   };
-  if (plan.characterPlan.additions.length || plan.characterPlan.merges.length) saveCharacters([...plan.characterPlan.additions, ...replaceMerged(existingCharacters, plan.characterPlan.merges)]);
-  if (plan.wordPlan.additions.length || plan.wordPlan.merges.length) saveWords([...plan.wordPlan.additions, ...replaceMerged(existingWords, plan.wordPlan.merges)]);
+  localWritten = true;
+  if (plan.characterPlan.additions.length || plan.characterPlan.merges.length) localStorage.setItem(CHARACTERS_KEY, JSON.stringify([...plan.characterPlan.additions, ...replaceMerged(existingCharacters, plan.characterPlan.merges)]));
+  if (plan.wordPlan.additions.length || plan.wordPlan.merges.length) localStorage.setItem(WORDS_KEY, JSON.stringify([...plan.wordPlan.additions, ...replaceMerged(existingWords, plan.wordPlan.merges)]));
   if (characters().length < existingCharacters.length + plan.characterPlan.additions.length) throw new Error('人物库写入没有完成，请检查浏览器存储空间');
   if (words().length < existingWords.length + plan.wordPlan.additions.length) throw new Error('散词库写入没有完成，请检查浏览器存储空间');
-  for (const record of plan.artworkPlan.merges) await dbPut('artworks', record);
+  await new Promise((resolve, reject) => {
+  const transaction = db.transaction(['artworks', 'recipes'], 'readwrite');
+  transaction.oncomplete = resolve;
+  transaction.onabort = () => reject(transaction.error || new Error('备份恢复写入失败，图片与配方已撤销'));
+  transaction.onerror = () => {};
+  const artworks = transaction.objectStore('artworks');
+  const recipes = transaction.objectStore('recipes');
+  const writeRecipes = () => {
+    for (const record of plan.recipePlan.merges) {
+      const recipe = { ...record };
+      if (!recipe.coverArtworkId && recipe._incomingCoverArtworkId) recipe.coverArtworkId = plan.artworkPlan.idMap.get(String(recipe._incomingCoverArtworkId)) || null;
+      delete recipe._incomingCoverArtworkId;
+      recipes.put(recipe);
+    }
+    for (const source of plan.recipePlan.additions) {
+      recipes.put({ ...source, coverArtworkId: plan.artworkPlan.idMap.get(String(source.coverArtworkId ?? '')) || null });
+    }
+  };
+  try {
+  for (const record of plan.artworkPlan.merges) artworks.put(record);
+  let remaining = plan.artworkPlan.additions.length;
+  if (!remaining) writeRecipes();
   for (const artwork of plan.artworkPlan.additions) {
-    const oldId = artwork._oldId;
     const record = { ...artwork };
     delete record.id;
-    delete record._oldId;
-    const newId = await dbAdd('artworks', record);
-    if (oldId) plan.artworkPlan.idMap.set(oldId, newId);
+    delete record._oldIds;
+    const request = artworks.add(record);
+    request.onsuccess = () => {
+      for (const oldId of artwork._oldIds) plan.artworkPlan.idMap.set(oldId, request.result);
+      if (!--remaining) {
+        try { writeRecipes(); } catch { transaction.abort(); }
+      }
+    };
   }
-  for (const record of plan.recipePlan.merges) {
-    const recipe = { ...record };
-    if (!recipe.coverArtworkId && recipe._incomingCoverArtworkId) recipe.coverArtworkId = plan.artworkPlan.idMap.get(String(recipe._incomingCoverArtworkId)) || null;
-    delete recipe._incomingCoverArtworkId;
-    await dbPut('recipes', recipe);
-  }
-  for (const source of plan.recipePlan.additions) {
-    const recipe = { ...source, coverArtworkId: plan.artworkPlan.idMap.get(String(source.coverArtworkId ?? '')) || null };
-    await dbPut('recipes', recipe);
-  }
+  } catch (error) { transaction.abort(); reject(error); }
+  });
+  localWritten = false;
+  renderCharacters();
+  renderWords();
+  updateActiveCharacterLabel();
   await refreshData();
   return { ...plan.stats, skippedCount: plan.stats.skipped, mergedCount: plan.stats.merged };
+  } catch (error) {
+    if (localWritten) {
+      for (const [key, value] of [[CHARACTERS_KEY, previousCharacters], [WORDS_KEY, previousWords]]) {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      }
+    }
+    throw error;
+  } finally { restoreInProgress = false; }
 }
 
 function showRestorePreview(data, plan) {
