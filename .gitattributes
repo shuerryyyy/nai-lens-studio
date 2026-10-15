@@ -1,0 +1,5 @@
+# Keep published runtime files byte-identical to SHA256SUMS on all platforms.
+assets/*.js -text
+assets/*.css -text
+assets/*.ttf -text
+download/*.html -text

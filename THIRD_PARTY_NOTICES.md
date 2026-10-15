@@ -10,9 +10,17 @@ NAI 镜头台包含以下第三方资源。它们不适用项目根目录的 MIT
 - 许可证：MIT 或 GPL-3.0；本项目按 MIT 条款使用和分发。
 - 完整许可文本：[licenses/JSZip-MIT.txt](licenses/JSZip-MIT.txt)
 
+## Lucide SVG 图标
+
+- 用途：导航、工具按钮与文件夹控件。
+- 项目：https://lucide.dev/
+- 图标资产来自 Iconify 的 Lucide 集合；线宽统一适配为 1.65。
+- 许可证：ISC。
+- 完整许可文本：[licenses/Lucide-ISC-LICENSE.txt](licenses/Lucide-ISC-LICENSE.txt)
+
 ## Noto Serif SC 字体子集
 
-- 用途：页面标题字体。
+- 用途：旧版标题字体；新版采用系统字体栈，兼容资源暂保留。
 - 项目：https://fonts.google.com/noto/specimen/Noto+Serif+SC
 - 字体来源：https://github.com/notofonts/noto-cjk
 - 许可证：SIL Open Font License 1.1。

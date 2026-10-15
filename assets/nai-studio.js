@@ -17,7 +17,7 @@ const DEVICE_ID_KEY = 'nai_studio_device_id_v1';
 const MIGRATION_KEY = 'nai_studio_recipe_migration_v2';
 const AUTO_SCENE_TAG_KEY = 'nai_studio_auto_scene_tag_v1';
 const DB_NAME = 'nai_shot_studio';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let db;
 let recipesCache = [];
@@ -39,8 +39,6 @@ let pendingBackupImport = null;
 let artworkSelectionMode = false;
 let selectedArtworkIds = new Set();
 let batchMoveActive = false;
-let currentLibraryFilter = { type: 'all', value: '', label: '全部图片' };
-let libraryResultsCollapsed = false;
 let imagePreviewUrl = '';
 let importPreviewUrl = '';
 let generationController = null;
@@ -52,7 +50,7 @@ function normalizeLibraryRecord(record, type, strict = false) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('备份中存在无效记录');
   const result = { ...record };
   result.id = String(record.id ?? makeId());
-  for (const key of ['name', 'content', 'fullPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'scenePrompt', 'characterPrompt', 'sourcePrompt', 'title', 'category', 'note', 'sourceUrl', 'transferId', 'recipeId', 'characterId', 'model', 'size', 'sampler', 'noiseSchedule', 'gender', 'hair', 'eyes', 'skin', 'body', 'features', 'outfit', 'naturalAppearance']) {
+  for (const key of ['folderId', 'name', 'content', 'fullPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'scenePrompt', 'characterPrompt', 'sourcePrompt', 'title', 'category', 'note', 'sourceUrl', 'transferId', 'recipeId', 'characterId', 'model', 'size', 'sampler', 'noiseSchedule', 'gender', 'hair', 'eyes', 'skin', 'body', 'features', 'outfit', 'naturalAppearance']) {
     if (key in result && typeof result[key] !== 'string') result[key] = String(result[key] ?? '');
   }
   result.tags = Array.isArray(record.tags) ? record.tags.filter(tag => typeof tag === 'string') : splitTags(record.tags);
@@ -157,7 +155,7 @@ function samplerName(value = '') {
 }
 
 function shortModel(model = '') {
-  return model.replace('nai-diffusion-', '').replace('4-5', 'V4.5').replace('5-', 'V5 ').replaceAll('-', ' ');
+  return String(model).replace(/^nai-diffusion-4-5/, 'V4.5').replace(/^nai-diffusion-(\d+)/, 'V$1').replaceAll('-', ' ');
 }
 
 function showDialog(id) {
@@ -320,6 +318,7 @@ function applyApiPreset(preset) {
   $('endpoint').value = preset.endpoint || '';
   $('token').value = preset.token || '';
   $('presetSaveToken').checked = Boolean(preset.token);
+  $('deleteApiPresetBtn').disabled = false;
   updateApiStatus();
   saveSettings();
   toast(`已切换到：${preset.name}`);
@@ -351,6 +350,7 @@ $('saveApiPresetBtn').onclick = () => {
   else list.unshift(preset);
   saveApiPresets(list);
   $('apiPresetSelect').value = preset.id;
+  $('deleteApiPresetBtn').disabled = false;
   updateApiStatus();
   toast(existingIndex >= 0 ? 'API 预设已更新' : 'API 预设已保存');
 };
@@ -384,7 +384,8 @@ $('confirmClearData').onclick = async () => {
   button.disabled = true;
   button.textContent = '正在清除…';
   try {
-    await Promise.all([dbClear('artworks'), dbClear('recipes'), dbClear('vibes')]);
+    await Promise.all([dbClear('artworks'), dbClear('recipes'), dbClear('vibes'), dbClear('collections')]);
+    collectionsCache = [];
     Object.keys(localStorage).filter(key => key.startsWith('nai_studio_')).forEach(key => localStorage.removeItem(key));
     closeDialog('clearDataDialog');
     toast('本机数据已全部清除');
@@ -400,10 +401,10 @@ function updateModelUI() {
   renderVibePanel();
   const model = $('model').value;
   const isV5 = model.startsWith('nai-diffusion-5-');
-  $('modelBadge').textContent = isV5 ? 'V5' : model.includes('4-5') ? 'V4.5' : 'V3';
+  $('modelBadge').textContent = isV5 ? 'V5' : model.includes('4-5') ? 'V4.5' : model.includes('diffusion-4-') ? 'V4' : 'V3';
   $('modelHelp').textContent = isV5
     ? (model.endsWith('full') ? 'V5 Full · 长提示词、多角色与透明背景' : 'V5 Curated · 更干净、聚焦的训练集')
-    : (model.includes('4-5') ? 'V4.5 · 兼容传统 TAG 与角色提示' : 'Anime V3 · 传统标签模型');
+    : (model.includes('4-5') ? 'V4.5 · 兼容传统 TAG 与角色提示' : model.includes('diffusion-4-') ? 'V4 · 多角色与 Vibe 参考' : 'Anime V3 · 传统标签模型');
   $('transparentWrap').style.opacity = isV5 ? '1' : '.42';
   $('transparentBg').disabled = !isV5;
 }
@@ -433,6 +434,7 @@ function openDB() {
     request.onupgradeneeded = () => {
       document.documentElement.dataset.stage = 'upgrading-db';
       const database = request.result;
+      if (!database.objectStoreNames.contains('collections')) database.createObjectStore('collections', { keyPath: 'id' });
       if (!database.objectStoreNames.contains('vibes')) database.createObjectStore('vibes', { keyPath: 'id' });
       if (!database.objectStoreNames.contains('artworks')) {
         const artworks = database.createObjectStore('artworks', { keyPath: 'id', autoIncrement: true });
@@ -443,7 +445,7 @@ function openDB() {
         recipes.createIndex('updatedAt', 'updatedAt');
       }
     };
-    request.onsuccess = () => { document.documentElement.dataset.stage = 'db-open'; db = request.result; resolve(); };
+    request.onsuccess = () => { document.documentElement.dataset.stage = 'db-open'; db = request.result; db.onversionchange = () => db.close(); resolve(); };
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error('数据库升级被其他页面占用，请关闭旧页面后重试'));
   });
@@ -548,6 +550,7 @@ function openCharacterEditor(id) {
 function useCharacter(id) {
   const character = characters().find(item => item.id === id);
   if (!character) return;
+  recordLibraryUse('characters', character.id);
   $('characterPrompt').value = characterPrompt(character);
   setSelectedCharacterIds([character.id]);
   saveSettings();
@@ -573,6 +576,7 @@ function renderCharacters() {
     const prompt = characterPrompt(character);
     return `<article class="character-card"><div class="character-head"><div><h2>${escapeHTML(character.name)}</h2><div class="chips">${(character.tags || []).map(tag => `<span class="chip">${escapeHTML(tag)}</span>`).join('') || '<span class="chip">未添加标签</span>'}</div></div><button class="icon-btn${character.favorite ? ' favorite-active' : ''}" data-character-favorite="${escapeHTML(character.id)}" type="button" aria-label="${character.favorite ? '取消收藏' : '收藏'}${escapeHTML(character.name)}" aria-pressed="${Boolean(character.favorite)}">${icon('star')}</button></div><p class="character-prompt">${escapeHTML(prompt || '还没有完整人物提示词')}</p><div class="character-actions"><button class="primary" data-character-use="${escapeHTML(character.id)}" type="button">放入创作台</button><button class="secondary" data-character-copy="${escapeHTML(character.id)}" type="button">复制完整描述</button><button class="secondary" data-character-edit="${escapeHTML(character.id)}" type="button">修改</button><button class="danger-btn" data-character-delete="${escapeHTML(character.id)}" type="button">删除</button></div><details class="character-details"><summary>查看并复制分类资料</summary><div class="character-fields">${Object.keys(characterFieldLabels).map(key => characterDetailHTML(character, key)).join('')}</div></details></article>`;
   }).join('') : '<div class="empty"><div><b>人物库还是空的</b><span>把常用角色保存下来，以后可以一键放入创作台。</span></div></div>';
+  if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('characters', list, listElement, '.character-card');
   listElement.querySelectorAll('[data-character-use]').forEach(button => button.onclick = () => useCharacter(button.dataset.characterUse));
   listElement.querySelectorAll('[data-character-copy]').forEach(button => button.onclick = () => {
     const character = characters().find(item => item.id === button.dataset.characterCopy);
@@ -606,6 +610,7 @@ $('characterForm').onsubmit = event => {
   const editId = $('characterEditId').value;
   const old = list.find(item => item.id === editId);
   const character = {
+    ...old,
     id: editId || makeId(), name: $('characterName').value.trim(),
     fullPrompt: $('characterFullPrompt').value.trim(), gender: $('characterGender').value.trim(),
     hair: $('characterHair').value.trim(), eyes: $('characterEyes').value.trim(),
@@ -700,6 +705,7 @@ function pickParams(source = {}) {
 }
 
 async function refreshData() {
+  if (typeof refreshCollections === 'function') await refreshCollections();
   recipesCache = (await dbAll('recipes')).map(item => normalizeLibraryRecord(item, 'recipe')).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   artworksCache = (await dbAll('artworks')).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   renderRecipeOptions();
@@ -710,9 +716,9 @@ async function refreshData() {
 function renderRecipeOptions() {
   const current = $('recipeSelect').value;
   const options = recipesCache.map(recipe => `<option value="${escapeHTML(recipe.id)}">${escapeHTML(recipe.name)}</option>`).join('');
-  $('recipeSelect').innerHTML = `<option value="">未分类</option>${options}`;
+  $('recipeSelect').innerHTML = `<option value="">未关联配方</option>${options}`;
   $('importRecipeSelect').innerHTML = options || '<option value="">还没有配方</option>';
-  $('moveRecipeSelect').innerHTML = `<option value="">未分类</option>${options}`;
+  $('moveRecipeSelect').innerHTML = `<option value="">未关联配方</option>${options}`;
   if (recipesCache.some(recipe => recipe.id === current)) $('recipeSelect').value = current;
   else if (current) $('recipeSelect').value = '';
   updateActiveRecipeLabel();
@@ -723,7 +729,7 @@ function updateActiveRecipeLabel() {
   $('activeRecipeName').textContent = currentRecipe ? currentRecipe.name : '未选择配方档案';
   $('activeRecipeHint').textContent = currentRecipe
     ? '生成图片会自动保存到这份配方档案'
-    : '生成后暂存到“未分类”，也可以先选择或新建配方';
+    : '生成后暂不关联配方，也可以先选择或新建配方';
 }
 
 function applyRecipe(recipe, includeParams = true) {
@@ -736,7 +742,7 @@ function applyRecipe(recipe, includeParams = true) {
     if (Array.isArray(recipe.defaultParams?.vibes)) restoreVibeSelection(recipe.defaultParams.vibes, recipe.defaultParams.model);
     Object.entries(recipe.defaultParams || {}).forEach(([key, value]) => {
       const element = $(key);
-      if (!element) return;
+      if (!element || value === undefined || value === null || (key === 'model' && !value)) return;
       if (element.type === 'checkbox') element.checked = Boolean(value);
       else element.value = value;
     });
@@ -770,6 +776,7 @@ function openRecipeEditor(recipe = null, prefillCurrent = false) {
   $('recipeNote').value = recipe?.note || '';
   $('recipeSourceUrl').value = recipe?.sourceUrl || '';
   $('recipeSteps').value = Number(params.steps) || 28;
+  $('recipeModel').value = params.model || '';
   $('recipeSampler').value = params.sampler || 'k_euler_ancestral';
   showDialog('recipeDialog');
   setTimeout(() => $('recipeName').focus(), 50);
@@ -799,6 +806,7 @@ $('recipeForm').onsubmit = async event => {
     manualOrder: old?.manualOrder ?? -Date.now(),
     defaultParams: {
       ...(old?.defaultParams || pickParams(collectMeta())),
+      model: $('recipeModel').value || undefined,
       steps: Number($('recipeSteps').value) || 28,
       sampler: $('recipeSampler').value
     }
@@ -851,7 +859,7 @@ function recipeViews() {
   const list = [...recipesCache];
   const uncategorized = artworksCache.filter(item => !item.recipeId);
   if (uncategorized.length) list.unshift({
-    id: '__uncategorized__', name: '未分类', artistPrompt: '', positivePrompt: '',
+    id: '__uncategorized__', name: '未关联配方', artistPrompt: '', positivePrompt: '',
     negativePrompt: '', tags: ['待整理'], coverArtworkId: null, virtual: true, updatedAt: Date.now()
   });
   return list;
@@ -894,7 +902,7 @@ function batchBarHTML(visibleIds = []) {
   if (!artworkSelectionMode) return '';
   const visible = visibleIds.map(String);
   const visibleSelected = visible.filter(id => selectedArtworkIds.has(id)).length;
-  return `<div class="batch-bar"><span>已选择 ${selectedArtworkIds.size} 张</span><button class="secondary" data-batch-all type="button">${visible.length && visibleSelected === visible.length ? '取消全选' : '全选当前'}</button><button class="secondary" data-batch-favorite type="button">收藏 / 取消</button><button class="secondary" data-batch-tag type="button">加标签</button><button class="secondary" data-batch-move type="button">移动</button><button class="danger-btn" data-batch-delete type="button">删除</button><button class="secondary" data-batch-cancel type="button">退出多选</button></div>`;
+  return `<div class="batch-bar"><span>已选择 ${selectedArtworkIds.size} 张</span><button class="secondary" data-batch-all type="button">${visible.length && visibleSelected === visible.length ? '取消全选' : '全选当前'}</button><button class="secondary" data-batch-favorite type="button">收藏 / 取消</button><button class="secondary" data-batch-tag type="button">加标签</button><button class="secondary" data-batch-move type="button">更换配方</button><button class="danger-btn" data-batch-delete type="button">删除</button><button class="secondary" data-batch-cancel type="button">退出多选</button></div>`;
 }
 
 function setArtworkSelectionMode(enabled) {
@@ -1011,9 +1019,11 @@ function renderRecipes() {
       button.onclick = () => currentGalleryRecipeId === button.dataset.recipeId ? collapseRecipeInspector() : inspectRecipe(list.find(recipe => recipe.id === button.dataset.recipeId));
     });
   }
+  if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('recipes', list, grid, '.recipe-card');
   if (currentGalleryRecipeId) {
     const fresh = list.find(recipe => recipe.id === currentGalleryRecipeId);
     if (fresh) inspectRecipe(fresh, false);
+    else collapseRecipeInspector();
   }
 }
 
@@ -1072,7 +1082,7 @@ function inspectRecipe(recipe, scroll = true) {
   document.querySelectorAll('[data-recipe-id]').forEach(button => button.classList.toggle('active', button.dataset.recipeId === recipe.id));
   if (matchMedia('(max-width:760px), (max-width:1100px) and (pointer:coarse)').matches) {
     const card = document.querySelector(`[data-recipe-id="${CSS.escape(String(recipe.id))}"]`);
-    if (card) card.after(inspector);
+    if (card) (card.closest('.folder-item') || card).after(inspector);
   } else {
     restoreRecipeInspectorHome();
     if (scroll && matchMedia('(max-width:1100px)').matches) setTimeout(() => inspector.scrollIntoView({ behavior: 'smooth', block: 'start' }), 30);
@@ -1105,7 +1115,7 @@ function bindImageAction(button, id) {
 
 async function deleteRecipe(recipe) {
   const count = artworksCache.filter(item => item.recipeId === recipe.id).length;
-  if (!confirm(`删除配方“${recipe.name}”？其中 ${count} 张图片会移到“未分类”，不会删除图片。`)) return;
+  if (!confirm(`删除配方“${recipe.name}”？其中 ${count} 张图片将不再关联配方，不会删除图片。`)) return;
   for (const artwork of artworksCache.filter(item => item.recipeId === recipe.id)) {
     artwork.recipeId = '';
     artwork.category = '未分类';
@@ -1117,12 +1127,12 @@ async function deleteRecipe(recipe) {
   $('recipeInspector').className = 'sheet recipe-inspector empty-inspector';
   $('recipeInspector').textContent = '选择一份配方，查看封面立图与可复制内容';
   await refreshData();
-  toast('配方已删除，图片已移到未分类');
+  toast('配方已删除，图片已解除配方关联');
 }
 
-function artworkCharacterIds(item) {
-  const ids = Array.isArray(item.characterIds) ? item.characterIds.map(String) : (item.characterId ? [String(item.characterId)] : []);
-  if (ids.length) return [...new Set(ids)];
+function inferredArtworkCharacterIds(item = {}) {
+  // Only legacy records without explicit links use prompt matching. Backup IDs stay exact.
+  if (Array.isArray(item.characterIds) || item.characterId) return artworkCharacterIds(item);
   const prompt = String(item.characterPrompt || '');
   return characters().filter(character => {
     const savedPrompt = characterPrompt(character);
@@ -1133,23 +1143,7 @@ function artworkCharacterIds(item) {
 function artworkCharacterNames(item) {
   const savedNames = Array.isArray(item.characterNames) ? item.characterNames : (item.characterName ? [item.characterName] : []);
   if (savedNames.length) return [...new Set(savedNames.filter(Boolean))];
-  return artworkCharacterIds(item).map(id => characters().find(character => character.id === id)?.name).filter(Boolean);
-}
-
-function countMap(values) {
-  const map = new Map();
-  values.flat().filter(Boolean).forEach(value => map.set(String(value), (map.get(String(value)) || 0) + 1));
-  return map;
-}
-
-function libraryFilterGroup(title, type, entries, query) {
-  const filtered = [...entries].filter(([name]) => !query || name.toLowerCase().includes(query));
-  if (!filtered.length) return '';
-  return `<section class="library-filter-group"><h3>${escapeHTML(title)}</h3><div class="library-filter-list">${filtered.map(([name, count]) => {
-    const active = currentLibraryFilter.type === type && currentLibraryFilter.value === name;
-    const deleteButton = type === 'tag' ? `<button class="library-tag-delete" data-library-delete-tag="${escapeHTML(name)}" type="button" aria-label="删除图片标签 ${escapeHTML(name)}" title="删除图片标签">${icon('trash')}</button>` : '';
-    return `<div class="library-filter-row"><button class="library-filter${active ? ' active' : ''}" data-library-type="${type}" data-library-value="${escapeHTML(name)}" type="button"><span>${escapeHTML(name)}</span><b>${count}</b></button>${deleteButton}</div>`;
-  }).join('')}</div></section>`;
+  return inferredArtworkCharacterIds(item).map(id => characters().find(character => character.id === id)?.name).filter(Boolean);
 }
 
 async function deleteLibraryTag(tag) {
@@ -1161,21 +1155,8 @@ async function deleteLibraryTag(tag) {
     item.updatedAt = Date.now();
     await dbPut('artworks', item);
   }
-  if (currentLibraryFilter.type === 'tag' && currentLibraryFilter.value === tag) {
-    currentLibraryFilter = { type: 'all', value: '', label: '全部图片' };
-    libraryResultsCollapsed = false;
-  }
   await refreshData();
   toast(`已从 ${affected.length} 张图片中删除标签“${tag}”`);
-}
-
-function artworkMatchesLibraryFilter(item) {
-  const { type, value } = currentLibraryFilter;
-  if (type === 'favorite') return Boolean(item.favorite);
-  if (type === 'character') return artworkCharacterNames(item).includes(value) || artworkCharacterIds(item).includes(value);
-  if (type === 'tag') return (item.tags || []).includes(value);
-  if (type === 'category') return (item.category || '未分类') === value;
-  return true;
 }
 
 function restoreLibraryResultsHome() {
@@ -1192,36 +1173,13 @@ function renderImageLibrary() {
   libraryUrls.forEach(URL.revokeObjectURL);
   libraryUrls = [];
   const query = $('librarySearch').value.trim().toLowerCase();
-  const characterCounts = countMap(artworksCache.map(artworkCharacterNames));
-  const tagCounts = countMap(artworksCache.map(item => item.tags || []));
-  const categoryCounts = countMap(artworksCache.map(item => [item.category || '未分类']));
-  const allActive = currentLibraryFilter.type === 'all';
-  const favoriteCount = artworksCache.filter(item => item.favorite).length;
-  const favoriteActive = currentLibraryFilter.type === 'favorite';
-  filterList.innerHTML = `<div class="library-filter-list"><button class="library-filter${allActive ? ' active' : ''}" data-library-type="all" data-library-value="" type="button"><span>全部图片</span><b>${artworksCache.length}</b></button><button class="library-filter${favoriteActive ? ' active' : ''}" data-library-type="favorite" data-library-value="" type="button"><span>收藏图片</span><b>${favoriteCount}</b></button></div>${libraryFilterGroup('人物', 'character', characterCounts, query)}${libraryFilterGroup('图片标签', 'tag', tagCounts, query)}${libraryFilterGroup('配方分类', 'category', categoryCounts, query)}`;
-  filterList.querySelectorAll('[data-library-type]').forEach(button => button.onclick = () => {
-    const sameFilter = currentLibraryFilter.type === button.dataset.libraryType && currentLibraryFilter.value === button.dataset.libraryValue;
-    if (matchMedia('(max-width:760px), (max-width:1100px) and (pointer:coarse)').matches && sameFilter && !libraryResultsCollapsed) libraryResultsCollapsed = true;
-    else {
-      currentLibraryFilter = {
-        type: button.dataset.libraryType,
-        value: button.dataset.libraryValue,
-        label: button.dataset.libraryType === 'all' ? '全部图片' : button.dataset.libraryType === 'favorite' ? '收藏图片' : button.dataset.libraryValue
-      };
-      libraryResultsCollapsed = false;
-    }
-    renderImageLibrary();
-  });
-  filterList.querySelectorAll('[data-library-delete-tag]').forEach(button => button.onclick = () => deleteLibraryTag(button.dataset.libraryDeleteTag));
-  filterList.querySelectorAll('[data-library-type]').forEach(button => {
-    button.setAttribute('aria-expanded', String(button.classList.contains('active') && !libraryResultsCollapsed));
-  });
-  let images = artworksCache.filter(artworkMatchesLibraryFilter).filter(item => !query || [
+  renderGalleryFacets(filterList);
+  let images = artworksCache.filter(matchesGalleryFacets).filter(item => !query || [
     artworkSearchText(item), ...artworkCharacterNames(item)
   ].join(' ').toLowerCase().includes(query));
   if ($('librarySort').value === 'oldest') images = [...images].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   else images = [...images].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  $('libraryActiveName').textContent = currentLibraryFilter.label;
+  $('libraryActiveName').textContent = '图片';
   $('libraryCount').textContent = `${images.length} 张`;
   $('librarySelectBtn').textContent = artworkSelectionMode ? '退出多选' : '多选';
   $('librarySelectBtn').onclick = () => setArtworkSelectionMode(!artworkSelectionMode);
@@ -1234,18 +1192,13 @@ function renderImageLibrary() {
     const title = item.title || '未命名镜头';
     const favoriteMark = item.favorite ? `<span class="library-favorite-mark" aria-label="已收藏">${icon('star')}</span>` : '';
     return `<button class="library-image${selectedArtworkIds.has(String(item.id)) ? ' selected' : ''}" data-library-image="${item.id}" type="button" aria-label="${artworkSelectionMode ? '选择' : '查看'}${escapeHTML(title)}" title="${escapeHTML(title)}">${selectionMark(item)}${favoriteMark}<img loading="lazy" decoding="async" src="${url}" alt="${escapeHTML(title)}"></button>`;
-  }).join('') : '<div class="empty"><div><b>这个分类里还没有图片</b><span>生成图片后添加标签，或从人物库选择角色再生成。</span></div></div>';
+  }).join('') : '<div class="empty"><div><b>没有符合条件的图片</b><span>可以取消筛选条件，或换个关键词搜索。</span></div></div>';
+  if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('artworks', images, imageGrid, '.library-image');
   imageGrid.classList.toggle('selection-mode', artworkSelectionMode);
   imageGrid.querySelectorAll('[data-library-image]').forEach(button => button.onclick = () => artworkSelectionMode ? toggleArtworkSelection(button.dataset.libraryImage) : openImageDialog(artworksCache.find(item => item.id === Number(button.dataset.libraryImage))));
   const results = $('libraryResults');
   results.hidden = false;
-  if (matchMedia('(max-width:760px), (max-width:1100px) and (pointer:coarse)').matches && libraryResultsCollapsed) {
-    results.hidden = true;
-    restoreLibraryResultsHome();
-  } else if (matchMedia('(max-width:760px), (max-width:1100px) and (pointer:coarse)').matches) {
-    const active = filterList.querySelector('.library-filter.active');
-    if (active) (active.closest('.library-filter-row') || active).after(results);
-  }
+  restoreLibraryResultsHome();
 }
 
 function openImageDialog(item) {
@@ -1253,7 +1206,7 @@ function openImageDialog(item) {
   currentImage = item;
   const recipe = recipesCache.find(value => value.id === item.recipeId);
   $('imageDialogTitle').textContent = item.title || '图片记录';
-  $('imageDialogMeta').textContent = `${recipe?.name || '未分类'} · ${shortModel(item.model || '未知模型')} · ${item.size || '未知尺寸'}`;
+  $('imageDialogMeta').textContent = `${recipe?.name || '未关联配方'} · ${shortModel(item.model || '未知模型')} · ${item.size || '未知尺寸'}`;
   if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
   imagePreviewUrl = URL.createObjectURL(item.blob);
   $('imageDialogPreview').src = imagePreviewUrl;
@@ -1267,12 +1220,11 @@ function openImageDialog(item) {
     ['画面描述', item.scenePrompt || item.sourcePrompt], ['人物提示词', item.characterPrompt],
     ['画师串', item.artistPrompt], ['正面提示词', item.positivePrompt], ['负面提示词', item.negativePrompt]
   ];
-  $('imagePromptDetails').innerHTML = promptRows.map(([label, value]) => `<section class="image-prompt-row"><header><b>${label}</b></header><p>${escapeHTML(value || '—')}</p></section>`).join('');
+  $('imagePromptDetails').innerHTML = promptRows.map(([label, value], index) => `<section class="image-prompt-row"><header><b>${label}</b><button type="button" class="copy-btn" data-image-prompt-copy="${index}" aria-label="复制${label}" ${value ? '' : 'disabled'}>${icon('copy')}</button></header><p>${escapeHTML(value || '—')}</p></section>`).join('');
+  $('imagePromptDetails').querySelectorAll('[data-image-prompt-copy]').forEach(button => button.onclick = () => copyText(promptRows[Number(button.dataset.imagePromptCopy)][1] || '', button));
+  const copyAll = $('imageCopyAll');
+  copyAll.onclick = () => copyText(promptRows.filter(([, value]) => value).map(([label, value]) => `${label}\n${value}`).join('\n\n'), copyAll);
   $('imageSetCover').disabled = !recipe;
-  $('imageCopyCharacter').onclick = () => copyText(item.characterPrompt || '');
-  $('imageCopyArtist').onclick = () => copyText(item.artistPrompt || '');
-  $('imageCopyPositive').onclick = () => copyText(item.positivePrompt || '');
-  $('imageCopyNegative').onclick = () => copyText(item.negativePrompt || '');
   $('imageMove').onclick = () => { batchMoveActive = false; $('moveRecipeSelect').value = item.recipeId || ''; showDialog('moveDialog'); };
   $('saveImageTags').onclick = async () => {
     item.tags = splitTags($('imageTags').value);
@@ -1448,7 +1400,7 @@ function reuseArtwork(item) {
     if (item[key] !== undefined && $(key)) $(key).value = item[key];
   });
   $('tags').value = (item.tags || []).join(', ');
-  setSelectedCharacterIds(artworkCharacterIds(item));
+  setSelectedCharacterIds(inferredArtworkCharacterIds(item));
   $('transparentBg').checked = Boolean(item.transparentBg);
   $('recipeSelect').value = item.recipeId || '';
   updateActiveRecipeLabel();
@@ -1467,7 +1419,7 @@ function updatePickerCharacterCount() {
 
 function renderPickerList() {
   const query = $('pickerSearch').value.trim().toLowerCase();
-  const list = pickerItems.filter(item => !query || item.search.includes(query));
+  const list = sortPickerItems(pickerItems.filter(item => !query || item.search.includes(query)));
   if (pickerKind === 'character') {
     $('pickerList').innerHTML = list.length ? list.map(item => `<label class="picker-check"><input type="checkbox" value="${escapeHTML(item.id)}"${pickerCharacterSelection.has(item.id) ? ' checked' : ''}><span><b>${escapeHTML(item.name)}</b><span>${escapeHTML(item.value)}</span>${item.favorite ? '<span class="picker-badge">已收藏</span>' : ''}</span></label>`).join('') : '<div class="empty"><div><b>没有匹配的人物</b><span>试试人物名称、标签或描述中的关键词。</span></div></div>';
     $('pickerList').querySelectorAll('input').forEach(input => input.onchange = () => {
@@ -1482,6 +1434,7 @@ function renderPickerList() {
   $('pickerList').querySelectorAll('[data-picker-id]').forEach(button => button.onclick = () => {
     const item = pickerItems.find(value => value.id === button.dataset.pickerId);
     if (!item) return;
+    recordLibraryUse(item.libraryType, item.recordId);
     const target = $(pickerTargetId);
     target.value = button.dataset.pickerMode === 'append' && target.value.trim() ? `${target.value.trim()}, ${item.value}` : item.value;
     if (pickerKind === 'scene') setAutoSceneTag(item.name);
@@ -1494,6 +1447,7 @@ function renderPickerList() {
 function applyPickedCharacters(mode) {
   const pickedIds = [...pickerCharacterSelection];
   if (!pickedIds.length) return;
+  for (const id of pickedIds) recordLibraryUse('characters', id);
   const target = $(pickerTargetId);
   if (mode === 'replace') {
     setSelectedCharacterIds(pickedIds);
@@ -1515,6 +1469,7 @@ function applyPickedCharacters(mode) {
 
 function openPicker(kind, targetId = `${kind}Prompt`) {
   pickerKind = kind;
+  $('pickerSort').value = localStorage.getItem(`nai_picker_sort_${kind}`) || 'favorite';
   pickerTargetId = targetId;
   $('pickerSearch').value = '';
   const fieldName = { scene: '画面描述词', character: '人物提示词', artist: '画师串', positive: '正面词', negative: '负面词' }[kind];
@@ -1524,18 +1479,20 @@ function openPicker(kind, targetId = `${kind}Prompt`) {
   if (kind === 'character') {
     pickerCharacterSelection = new Set(selectedCharacterIds());
     pickerItems = characters().filter(character => characterPrompt(character)).map(character => ({
+      ...pickerRecordInfo(character, 'characters'),
       id: character.id, name: character.name, value: characterPrompt(character), favorite: Boolean(character.favorite),
       search: searchableText(character.name, characterPrompt(character), character.tags, character.note, character.sourceUrl)
     })).sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name, 'zh-CN'));
   } else {
     const recipeItems = ['scene', 'character'].includes(kind) ? [] : recipesCache.map(recipe => ({
+      ...pickerRecordInfo(recipe, 'recipes'),
       id: `recipe-${recipe.id}`, name: recipe.name, source: '配方档案', value: recipe[`${kind}Prompt`] || '', favorite: Boolean(recipe.favorite),
       search: searchableText(recipe.name, recipe[`${kind}Prompt`], recipe.tags, recipe.note, recipe.sourceUrl)
     }));
     const wordItems = words().flatMap(word => {
       const value = word.kind === kind ? word.content || '' : word.kind === 'bundle' ? bundleData(word)[`${kind}Prompt`] || '' : '';
       if (!value) return [];
-      return [{ id: `${word.kind}-${word.id}`, name: word.name, source: word.kind === 'bundle' ? '整套配方' : '散词库', value, favorite: Boolean(word.favorite), search: searchableText(word.name, value, word.category, word.tags, word.note, word.sourceUrl) }];
+      return [{ ...pickerRecordInfo(word, 'words'), id: `${word.kind}-${word.id}`, name: word.name, source: word.kind === 'bundle' ? '整套配方' : '散词库', value, favorite: Boolean(word.favorite), search: searchableText(word.name, value, word.category, word.tags, word.note, word.sourceUrl) }];
     });
     pickerItems = [...recipeItems, ...wordItems].filter(item => item.value).sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name, 'zh-CN'));
   }
@@ -1579,6 +1536,7 @@ function renderWords() {
       : '';
     return `<article class="word-row${expandedWordId === String(word.id) ? ' expanded' : ''}"><button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" aria-expanded="${expandedWordId === String(word.id)}"><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${escapeHTML(word.id)}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${escapeHTML(word.id)}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
   }).join('') : '<div class="empty"><div><b>散词库还是空的</b><span>保存单独词条，或用结构化表单保存整套配方。</span></div></div>';
+  if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('words', list, $('wordList'), '.word-row');
   document.querySelectorAll('[data-word-copy]').forEach(button => button.onclick = () => {
     const word = words().find(item => item.id === button.dataset.wordCopy);
     copyText(word?.content || '', button);
@@ -1669,6 +1627,7 @@ $('wordForm').onsubmit = event => {
   const editId = $('wordEditId').value;
   const old = list.find(item => item.id === editId);
   const word = {
+    ...old,
     id: editId || makeId(), name: $('wordName').value.trim(), kind,
     content: bundle ? JSON.stringify(bundle) : $('wordContent').value.trim(), bundle,
     category: $('wordCategory').value.trim() || '未分类', tags: splitTags($('wordTags').value),
@@ -1685,6 +1644,7 @@ $('wordForm').onsubmit = event => {
 function useWord(id) {
   const word = words().find(item => item.id === id);
   if (!word) return;
+  recordLibraryUse('words', word.id);
   if (word.kind === 'bundle') {
     const bundle = bundleData(word);
     ['artistPrompt', 'positivePrompt', 'negativePrompt'].forEach(key => {
@@ -1885,11 +1845,6 @@ $('generateBtn').onclick = async () => {
     $('token').focus();
     return;
   }
-  if (!meta.scenePrompt) {
-    setStatus('画面描述为空', 'err', '直接生图仍需要填写这一次的主体与场景');
-    $('scenePrompt').focus();
-    return;
-  }
   if (meta.seed !== '' && (!/^\d+$/.test(meta.seed) || Number(meta.seed) > 4294967295)) {
     setStatus('Seed 无效', 'err', '请留空使用随机值，或填写 0–4294967295 的整数。');
     $('seed').focus();
@@ -1980,7 +1935,6 @@ $('cancelGenerateBtn').onclick = () => generationController?.abort();
 
 matchMedia('(max-width:760px), (max-width:1100px) and (pointer:coarse)').addEventListener('change', () => {
   if (!db) return;
-  if (!matchMedia('(max-width:760px), (max-width:1100px) and (pointer:coarse)').matches) libraryResultsCollapsed = false;
   renderImageLibrary();
   if (currentGalleryRecipeId) inspectRecipe(recipesCache.find(item => item.id === currentGalleryRecipeId), false);
 });
@@ -2023,6 +1977,7 @@ async function parsePNG(file) {
       height = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(4);
     }
     if (type === 'tEXt') {
+      if (length > 2 * 1024 * 1024) { text.ReadWarning = '文本元数据过大，已跳过该文本块'; offset += length + 12; continue; }
       const keyPart = readNullTerminated(data, 0);
       text[decodeText(keyPart.bytes)] = decodeText(data.slice(keyPart.next));
     }
@@ -2044,17 +1999,6 @@ async function parsePNG(file) {
     if (type === 'IEND') break;
   }
   return { text, width, height };
-}
-
-function parseJSONCandidates(textMap) {
-  const parsed = [];
-  Object.values(textMap).forEach(value => {
-    try {
-      const candidate = JSON.parse(value);
-      if (candidate && typeof candidate === 'object') parsed.push(candidate);
-    } catch {}
-  });
-  return Object.assign({}, ...parsed);
 }
 
 function splitPrompt(prompt) {
@@ -2083,15 +2027,16 @@ function normalizeModel(value = '') {
   const model = String(value).toLowerCase();
   if (model.includes('4.5') || model.includes('4-5')) return model.includes('curated') ? 'nai-diffusion-4-5-curated' : 'nai-diffusion-4-5-full';
   if (/(?:diffusion[\s-]*|\bv)5\b/.test(model)) return model.includes('curated') ? 'nai-diffusion-5-curated' : 'nai-diffusion-5-full';
+  if (/(?:diffusion[\s-]*|\bv)4\b/.test(model)) return model.includes('curated') ? 'nai-diffusion-4-curated' : 'nai-diffusion-4-full';
   return model.includes('v3') || model.includes('diffusion-3') ? 'nai-diffusion-3' : '';
 }
 
 function extractNovelAIMetadata(png) {
-  const json = parseJSONCandidates(png.text);
-  const prompt = json.prompt || json.input || json.description || png.text.Description || png.text.description || '';
-  const negative = json.uc || json.negative_prompt || json.negativePrompt || png.text.Negative || '';
+  const json = flattenImageMetadata(png.text);
+  const prompt = metadataText(json.prompt, json.input, json.description, json.v4_prompt?.caption?.base_caption, json.Description, png.text.Description, png.text.description);
+  const negative = metadataText(json.uc, json.negative_prompt, json.negativePrompt, json.v4_negative_prompt?.caption?.base_caption, json.Negative, png.text.Negative);
   const split = extractArtistPrompt(prompt);
-  const model = normalizeModel(json.model || json.source || png.text.Source || png.text.Software || '');
+  const model = normalizeModel(json.model || json.source || json.Source || json.Software || png.text.Source || png.text.Software || '');
   const width = Number(json.width) || png.width;
   const height = Number(json.height) || png.height;
   return {
@@ -2120,7 +2065,7 @@ async function beginImageImport(file, targetRecipeId = '') {
   updateImportMode();
   showDialog('imageImportDialog');
   try {
-    const png = await parsePNG(file);
+    const png = await readImageMetadata(file);
     if (pendingImport !== importing) return;
     const metadata = extractNovelAIMetadata(png);
     pendingImport.metadata = metadata;
@@ -2130,10 +2075,11 @@ async function beginImageImport(file, targetRecipeId = '') {
     $('importRawPrompt').value = metadata.rawPrompt;
     $('importRawMeta').textContent = JSON.stringify(metadata.raw, null, 2);
     const artistName = metadata.artistPrompt.replace(/[{}[\]]/g, '').slice(0, 36);
-    $('importRecipeName').value = artistName || file.name.replace(/\.png$/i, '');
+    $('importRecipeName').value = artistName || file.name.replace(/\.(png|webp|jpe?g)$/i, '');
     $('importStatus').textContent = metadata.rawPrompt || metadata.negativePrompt
       ? '已读取图片内嵌信息；自动拆分后请确认三项内容。'
       : '图片中没有可识别的 NovelAI 提示词，可能经过截图或平台转码；仍可手动填写并归档。';
+    if (png.text.ReadWarning) $('importStatus').textContent += ` ${png.text.ReadWarning}。`;
   } catch (error) {
     if (pendingImport !== importing) return;
     $('importStatus').textContent = `解析失败：${error.message}。仍可手动填写配方后保存图片。`;
@@ -2183,7 +2129,7 @@ $('imageImportForm').onsubmit = async event => {
   }
   const metadata = pendingImport.metadata || {};
   const artwork = {
-    title: pendingImport.file.name.replace(/\.png$/i, ''),
+    title: pendingImport.file.name.replace(/\.(png|webp|jpe?g)$/i, ''),
     scenePrompt: metadata.rawPrompt || '', sourcePrompt: metadata.rawPrompt || '',
     artistPrompt: $('importArtist').value.trim(), positivePrompt: $('importPositive').value.trim(),
     negativePrompt: $('importNegative').value.trim(), fullPrompt: metadata.rawPrompt || '',
@@ -2204,7 +2150,7 @@ $('imageImportForm').onsubmit = async event => {
   await refreshData();
   if (recipeId) inspectRecipe(recipesCache.find(item => item.id === recipeId), false);
   switchView('gallery');
-  toast(recipeId ? '图片与配方已归档' : '图片已保存到未分类');
+  toast(recipeId ? '图片与配方已归档' : '图片已保存，未关联配方');
 };
 
 function blobToDataURL(blob) {
@@ -2267,13 +2213,14 @@ async function backupSelection(scope = 'all', startDate = '', endDate = '', sele
   const allWords = words();
   const allCharacters = characters();
   const allVibes = types.has('vibes') ? await dbAll('vibes') : [];
+  const collections = (await dbAll('collections')).filter(item => types.has(item.libraryType));
   if (scope !== 'range') {
     return {
       artworks: types.has('artworks') ? allArtworks : [],
       recipes: types.has('recipes') ? allRecipes : [],
       words: types.has('words') ? allWords : [],
       characters: types.has('characters') ? allCharacters : [],
-      vibes: allVibes
+      vibes: allVibes, collections
     };
   }
   const bounds = dateBounds(startDate, endDate);
@@ -2288,7 +2235,7 @@ async function backupSelection(scope = 'all', startDate = '', endDate = '', sele
     recipes: types.has('recipes') ? allRecipes.filter(item => itemInDateRange(item, bounds) || linkedRecipeIds.has(String(item.id))) : [],
     words: types.has('words') ? allWords.filter(item => itemInDateRange(item, bounds)) : [],
     characters: types.has('characters') ? allCharacters.filter(item => itemInDateRange(item, bounds) || linkedCharacterIds.has(String(item.id))) : [],
-    vibes: allVibes.filter(item => itemInDateRange(item,bounds) || linkedVibeIds.has(item.id))
+    vibes: allVibes.filter(item => itemInDateRange(item,bounds) || linkedVibeIds.has(item.id)), collections
   };
 }
 
@@ -2363,14 +2310,15 @@ $('backupForm').onsubmit = async event => {
       localStorage.setItem(CHARACTERS_KEY, JSON.stringify(characters().map(item => identities.has(String(item.id)) ? { ...item, transferId: identities.get(String(item.id)) } : item)));
     }
     const payload = {
-      app: 'NAI 镜头台', version: 8, exportedAt: new Date().toISOString(),
+      app: 'NAI 镜头台', version: 9, exportedAt: new Date().toISOString(),
       scope: scope === 'range' ? { type: 'range', startDate, endDate } : { type: 'all' },
       includedTypes: BACKUP_DATA_TYPES.filter(type => types.has(type)),
       artworks: packed,
       recipes: packedRecipes,
       words: packedWords,
       characters: packedCharacters,
-      vibeRecords: selected.vibes
+      vibeRecords: selected.vibes,
+      collections: selected.collections.map(item => withTransferId(item, 'collection', sourceDeviceId))
     };
     const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -2393,7 +2341,7 @@ function mergeRecord(existing, incoming, type = '') {
   const merged = { ...existing };
   const before = JSON.stringify(merged);
   merged.tags = [...new Set([...(existing.tags || []), ...(incoming.tags || [])])];
-  ['name', 'category', 'note', 'sourceUrl', 'transferId'].forEach(key => {
+  ['name', 'category', 'note', 'sourceUrl', 'transferId', 'folderId'].forEach(key => {
     if (!merged[key] && incoming[key]) merged[key] = incoming[key];
   });
   if (existing.favorite || incoming.favorite) merged.favorite = true;
@@ -2482,11 +2430,13 @@ function normalizeBackupPayload(input) {
   const wordSource = readArray(['words', 'wordLibrary', 'promptLibrary', 'promptWords']);
   const characterSource = readArray(['characters', 'characterLibrary', 'charactersLibrary', 'people']);
   const vibeSource = readArray(['vibeRecords', 'vibes']);
-  const recognized = artworkSource.length || recipeSource.length || wordSource.length || characterSource.length || vibeSource.length || source.app || source.version;
+  const collectionSource = readArray(['collections']);
+  const recognized = collectionSource.length || artworkSource.length || recipeSource.length || wordSource.length || characterSource.length || vibeSource.length || source.app || source.version;
   if (!recognized) throw new Error('没有找到图片、配方、人物或散词数据，请确认选择的是镜头台 JSON 备份');
   return {
     ...source,
     vibeRecords: vibeSource,
+    collections: collectionSource.map(normalizeCollection),
     artworks: artworkSource.map(item => normalizeLibraryRecord(item, 'artwork', true)),
     recipes: recipeSource.map(item => normalizeLibraryRecord({ ...item, artistPrompt: item.artistPrompt ?? item.artist ?? '', positivePrompt: item.positivePrompt ?? item.positive ?? '', negativePrompt: item.negativePrompt ?? item.negative ?? '' }, 'recipe', true)),
     words: wordSource.map(item => normalizeLibraryRecord({ ...item, kind: item.kind || item.type || 'artist', content: item.content ?? item.value ?? item.prompt ?? '' }, 'word', true)),
@@ -2496,6 +2446,13 @@ function normalizeBackupPayload(input) {
 
 async function analyzeBackupImport(data) {
   data = normalizeBackupPayload(data);
+  const collectionPlan = prepareRecordPlan(data.collections, await dbAll('collections'), item => `${item.libraryType}:${item.name.trim().toLocaleLowerCase()}`, 'collection');
+  for (const type of ['artworks', 'recipes', 'words', 'characters']) {
+    for (const item of data[type]) {
+      const folder = data.collections.find(folder => folder.libraryType === type && folder.id === String(item.folderId || ''));
+      item.folderId = folder ? collectionPlan.idMap.get(folder.id) || '' : '';
+    }
+  }
   const vibeRecords = await planVibeImport(data.vibeRecords);
   for (const artwork of data.artworks) if(Array.isArray(artwork.vibes)) artwork.vibes = artwork.vibes.map(item => ({...item,id:vibeRecords.idMap.get(String(item.id))||item.id}));
   for (const recipe of data.recipes) if(Array.isArray(recipe.defaultParams?.vibes)) recipe.defaultParams.vibes = recipe.defaultParams.vibes.map(item => ({...item,id:vibeRecords.idMap.get(String(item.id))||item.id}));
@@ -2538,7 +2495,7 @@ async function analyzeBackupImport(data) {
     additions.push({ ...source, id: undefined, recipeId: recipePlan.idMap.get(String(source.recipeId || '')) || source.recipeId || '', characterIds: mappedCharacterIds, characterId: mappedCharacterIds[0] || '', blob, contentHash: hash, _oldIds: oldKey ? [oldKey] : [] });
     byHash.set(hash, additions[additions.length - 1]);
   }
-  const plans = { data, vibeRecords, characterPlan, recipePlan, wordPlan, artworkPlan: { additions, merges, skipped, idMap: artworkIdMap } };
+  const plans = { data, collectionPlan, vibeRecords, characterPlan, recipePlan, wordPlan, artworkPlan: { additions, merges, skipped, idMap: artworkIdMap } };
   plans.stats = {
     added: additions.length + recipePlan.additions.length + wordPlan.additions.length + characterPlan.additions.length,
     merged: merges.length + recipePlan.merges.length + wordPlan.merges.length + characterPlan.merges.length,
@@ -2549,6 +2506,11 @@ async function analyzeBackupImport(data) {
     artworkSkipped: skipped, recipeSkipped: recipePlan.skipped, wordSkipped: wordPlan.skipped, characterSkipped: characterPlan.skipped
   };
   plans.stats.vibeCount = vibeRecords.length;
+  plans.stats.collectionCount = collectionPlan.additions.length;
+  plans.stats.added += collectionPlan.additions.length;
+  plans.stats.merged += collectionPlan.merges.length;
+  plans.stats.skipped += collectionPlan.skipped;
+  plans.stats.conflicts += collectionPlan.conflicts;
   plans.stats.added += vibeRecords.newCount;
   plans.stats.merged += vibeRecords.length-vibeRecords.newCount;
   return plans;
@@ -2574,7 +2536,7 @@ async function restoreBackupData(data, suppliedPlan = null) {
   if (characters().length < existingCharacters.length + plan.characterPlan.additions.length) throw new Error('人物库写入没有完成，请检查浏览器存储空间');
   if (words().length < existingWords.length + plan.wordPlan.additions.length) throw new Error('散词库写入没有完成，请检查浏览器存储空间');
   await new Promise((resolve, reject) => {
-  const transaction = db.transaction(['artworks', 'recipes', 'vibes'], 'readwrite');
+  const transaction = db.transaction(['artworks', 'recipes', 'vibes', 'collections'], 'readwrite');
   transaction.oncomplete = resolve;
   transaction.onabort = () => reject(transaction.error || new Error('备份恢复写入失败，图片与配方已撤销'));
   transaction.onerror = () => {};
@@ -2592,6 +2554,7 @@ async function restoreBackupData(data, suppliedPlan = null) {
     }
   };
   try {
+  for (const record of [...plan.collectionPlan.additions, ...plan.collectionPlan.merges]) transaction.objectStore('collections').put(record);
   for (const record of plan.vibeRecords || []) transaction.objectStore('vibes').put(record);
   for (const record of plan.artworkPlan.merges) artworks.put(record);
   let remaining = plan.artworkPlan.additions.length;
@@ -2611,6 +2574,7 @@ async function restoreBackupData(data, suppliedPlan = null) {
   } catch (error) { transaction.abort(); reject(error); }
   });
   localWritten = false;
+  await refreshCollections();
   renderCharacters();
   renderWords();
   updateActiveCharacterLabel();
@@ -2899,6 +2863,7 @@ async function refreshVibes() { vibeCache=await dbAll('vibes');renderVibePanel()
 function renderVibePanel() {
   if(!$('vibeSelection'))return;
   const supported=vibeSupported($('model').value);
+  if ($('vibeSummaryCount')) $('vibeSummaryCount').textContent = !vibeSelection.length ? '未选择' : supported ? `${vibeSelection.filter(item => item.enabled && item.strength > 0).length} / ${vibeSelection.length} 份启用` : `${vibeSelection.length} 份已暂停`;
   $('vibeSupportNote').textContent=supported ? '可叠加多份参考；首次编码可能收费，已编码素材会复用缓存。' : '当前 V5 暂不支持 Vibe；已选素材保留，切回 V4.5 后可继续使用。';
   $('vibeSelection').innerHTML=vibeSelection.map((item,index)=>{
     const asset=vibeCache.find(record=>record.id===item.id),ready=!!vibeEncoding(asset,$('model').value,item.information);
@@ -2940,7 +2905,6 @@ async function initVibes() {
   $('saveVibeMix').onclick=async()=>{try{if(!vibeSelection.length)throw new Error('请先选择 Vibe');const name=prompt('为这套 Vibe 组合起个名字');if(!name?.trim())return;await dbPut('vibes',{id:makeId(),type:'bundle',name:name.trim().slice(0,200),items:cleanVibeSelection(vibeSelection),createdAt:Date.now()});await refreshVibes();toast('组合已保存，可以从 Vibe 库直接选用');}catch(error){toast(error.message);}};
   $('importVibeFile').onclick=()=>$('vibeImportFile').click();$('exportVibeLibrary').onclick=()=>exportVibeRecords();
   $('vibeImportFile').onchange=async event=>{try{const file=event.target.files[0];if(!file)return;if(file.size>128*1024*1024)throw new Error('Vibe 文件超过 128 MB');await importVibeDocument(JSON.parse(await file.text()),file.name);$('vibeLibraryMessage').textContent='已导入；素材可多选，组合可直接使用。';}catch(error){$('vibeLibraryMessage').textContent=error.message;}finally{event.target.value='';}};
-  $('model').addEventListener('change',renderVibePanel);
   for(const id of ['endpoint','apiMode','apiPresetSelect'])$(id).addEventListener('change',()=>{$('vibeProxySupported').checked=false;$('vibeEncodeEndpoint').value='';});
   const updateViewport=()=>{
     const viewport=window.visualViewport;
@@ -2966,6 +2930,7 @@ async function initVibes() {
     document.documentElement.dataset.stage = 'opening-db';
     await openDB();
     await initVibes();
+    await initWorkbenchFeatures();
     document.documentElement.dataset.stage = 'migrating';
     await migrateLegacyData();
     document.documentElement.dataset.stage = 'refreshing';
