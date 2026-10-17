@@ -50,7 +50,7 @@ function normalizeLibraryRecord(record, type, strict = false) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('备份中存在无效记录');
   const result = { ...record };
   result.id = String(record.id ?? makeId());
-  for (const key of ['folderId', 'name', 'content', 'fullPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'scenePrompt', 'characterPrompt', 'sourcePrompt', 'title', 'category', 'note', 'sourceUrl', 'transferId', 'recipeId', 'characterId', 'model', 'size', 'sampler', 'noiseSchedule', 'gender', 'hair', 'eyes', 'skin', 'body', 'features', 'outfit', 'naturalAppearance']) {
+  for (const key of ['folderId', 'name', 'content', 'fullPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'scenePrompt', 'characterPrompt', 'sourcePrompt', 'title', 'category', 'note', 'author', 'sourceUrl', 'transferId', 'recipeId', 'characterId', 'model', 'size', 'sampler', 'noiseSchedule', 'gender', 'hair', 'eyes', 'skin', 'body', 'features', 'outfit', 'naturalAppearance']) {
     if (key in result && typeof result[key] !== 'string') result[key] = String(result[key] ?? '');
   }
   result.tags = Array.isArray(record.tags) ? record.tags.filter(tag => typeof tag === 'string') : splitTags(record.tags);
@@ -1491,7 +1491,7 @@ function openPicker(kind, targetId = `${kind}Prompt`) {
     const wordItems = words().flatMap(word => {
       const value = word.kind === kind ? word.content || '' : word.kind === 'bundle' ? bundleData(word)[`${kind}Prompt`] || '' : '';
       if (!value) return [];
-      return [{ ...pickerRecordInfo(word, 'words'), id: `${word.kind}-${word.id}`, name: word.name, source: word.kind === 'bundle' ? '整套配方' : '散词库', value, favorite: Boolean(word.favorite), search: searchableText(word.name, value, word.category, word.tags, word.note, word.sourceUrl) }];
+      return [{ ...pickerRecordInfo(word, 'words'), id: `${word.kind}-${word.id}`, name: word.name, source: word.kind === 'bundle' ? '整套配方' : '散词库', value, favorite: Boolean(word.favorite), search: searchableText(word.name, value, word.category, word.tags, word.author, word.note, word.sourceUrl) }];
     });
     pickerItems = [...recipeItems, ...wordItems].filter(item => item.value).sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name, 'zh-CN'));
   }
@@ -1518,7 +1518,7 @@ function renderWords() {
     const bundle = word.kind === 'bundle' ? bundleData(word) : {};
     return (!filter || word.kind === filter) && (!query || [
       word.name, word.content, bundle.artistPrompt, bundle.positivePrompt, bundle.negativePrompt,
-      word.category, word.note, word.sourceUrl, ...(word.tags || [])
+      word.category, word.author, word.note, word.sourceUrl, ...(word.tags || [])
     ].join(' ').toLowerCase().includes(query));
   });
   $('wordList').innerHTML = list.length ? list.map(word => {
@@ -1530,8 +1530,8 @@ function renderWords() {
       ? `<button class="secondary" data-bundle-copy="artistPrompt" data-word-id="${escapeHTML(word.id)}" type="button">画师</button><button class="secondary" data-bundle-copy="positivePrompt" data-word-id="${escapeHTML(word.id)}" type="button">正面</button><button class="secondary" data-bundle-copy="negativePrompt" data-word-id="${escapeHTML(word.id)}" type="button">负面</button>`
       : `<button class="copy-btn" data-word-copy="${escapeHTML(word.id)}" aria-label="复制${escapeHTML(word.name)}">${icon('copy')}</button>`;
     const safeSource = safeHttpUrl(word.sourceUrl);
-    const provenance = word.note || word.sourceUrl
-      ? `<div class="word-provenance">${word.note ? `<span title="${escapeHTML(word.note)}">备注：${escapeHTML(word.note)}</span>` : ''}${safeSource ? `<a class="source-link" href="${escapeHTML(safeSource)}" target="_blank" rel="noopener noreferrer">打开来源</a>` : word.sourceUrl ? `<span>来源：${escapeHTML(word.sourceUrl)}</span>` : ''}</div>`
+    const provenance = word.author || word.note || word.sourceUrl
+      ? `<div class="word-provenance">${word.author ? `<span title="${escapeHTML(word.author)}">作者：${escapeHTML(word.author)}</span>` : ''}${word.note ? `<span title="${escapeHTML(word.note)}">备注：${escapeHTML(word.note)}</span>` : ''}${safeSource ? `<a class="source-link" href="${escapeHTML(safeSource)}" target="_blank" rel="noopener noreferrer">打开来源</a>` : word.sourceUrl ? `<span>来源：${escapeHTML(word.sourceUrl)}</span>` : ''}</div>`
       : '';
     return `<article class="word-row${expandedWordId === String(word.id) ? ' expanded' : ''}"><button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" aria-expanded="${expandedWordId === String(word.id)}"><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${escapeHTML(word.id)}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${escapeHTML(word.id)}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
   }).join('') : '<div class="empty"><div><b>散词库还是空的</b><span>保存单独词条，或用结构化表单保存整套配方。</span></div></div>';
@@ -1588,6 +1588,7 @@ function openWordEditor(id) {
   $('wordNegative').value = bundle?.negativePrompt || '';
   $('wordCategory').value = word.category || '';
   $('wordTags').value = (word.tags || []).join(', ');
+  $('wordAuthor').value = word.author || '';
   $('wordNote').value = word.note || '';
   $('wordSourceUrl').value = word.sourceUrl || '';
   $('wordFormTitle').textContent = '修改词条';
@@ -1630,7 +1631,7 @@ $('wordForm').onsubmit = event => {
     id: editId || makeId(), name: $('wordName').value.trim(), kind,
     content: bundle ? JSON.stringify(bundle) : $('wordContent').value.trim(), bundle,
     category: $('wordCategory').value.trim() || '未分类', tags: splitTags($('wordTags').value),
-    note: $('wordNote').value.trim(), sourceUrl: $('wordSourceUrl').value.trim(),
+    author: $('wordAuthor').value.trim(), note: $('wordNote').value.trim(), sourceUrl: $('wordSourceUrl').value.trim(),
     favorite: Boolean(old?.favorite), createdAt: old?.createdAt || Date.now(), updatedAt: Date.now()
   };
   if (old) list.splice(list.findIndex(item => item.id === editId), 1, word);
@@ -2340,7 +2341,7 @@ function mergeRecord(existing, incoming, type = '') {
   const merged = { ...existing };
   const before = JSON.stringify(merged);
   merged.tags = [...new Set([...(existing.tags || []), ...(incoming.tags || [])])];
-  ['name', 'category', 'note', 'sourceUrl', 'transferId', 'folderId'].forEach(key => {
+  ['name', 'category', 'note', 'author', 'sourceUrl', 'transferId', 'folderId'].forEach(key => {
     if (!merged[key] && incoming[key]) merged[key] = incoming[key];
   });
   if (existing.favorite || incoming.favorite) merged.favorite = true;
