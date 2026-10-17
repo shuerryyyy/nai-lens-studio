@@ -3,6 +3,8 @@
   'use strict';
   const icon = name => `<svg class="icon" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`;
   const fixed = {
+    newWordBtn:['plus','新增词条'], closeWordEditor:['x','关闭编辑面板'],
+    recipeMultiSelectBtn:['square-check-big','多选配方'], wordMultiSelectBtn:['square-check-big','多选词条'],
     importImageBtn:['image','解析图片'], exportBtn:['download','下载备份'], importBtn:['upload','恢复备份'],
     newRecipeBtn:['plus','新建配方'], saveBundleBtn:['save','保存为配方'],
     galleryNewRecipeBtn:['plus','新建配方'], galleryImportBtn:['image','解析外部图片'],
@@ -48,8 +50,8 @@
       button.dataset.flatTooltip = accessible;
       button.removeAttribute('title');
     }
-    if(['librarySelectBtn','selectRecipeImages'].includes(button.id) && text) {
-      const stateLabel=text.includes('退出')?'退出多选':'多选图片';
+    if(['librarySelectBtn','selectRecipeImages','recipeMultiSelectBtn','wordMultiSelectBtn'].includes(button.id) && text) {
+      const stateLabel=text.includes('退出')?'退出多选':button.id==='recipeMultiSelectBtn'?'多选配方':button.id==='wordMultiSelectBtn'?'多选词条':'多选图片';
       button.setAttribute('aria-label',stateLabel);button.dataset.flatTooltip=stateLabel;
     }
     if (button.dataset.flatIcon !== name || !button.querySelector('svg')) {

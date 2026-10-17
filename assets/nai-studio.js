@@ -23,6 +23,7 @@ let db;
 let recipesCache = [];
 let artworksCache = [];
 let currentRecipe = null;
+let restoredRecipeId = null;
 let currentGalleryRecipeId = '';
 let currentImage = null;
 let pendingImport = null;
@@ -258,6 +259,8 @@ function saveSettings() {
     if (!element) return;
     data[id] = element.type === 'checkbox' ? element.checked : element.value;
   });
+  data.wordSources = collectedWordSources(data);
+  trackedWordSources = data.wordSources;
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
   if ($('rememberToken').checked) localStorage.setItem(TOKEN_KEY, $('token').value);
   else localStorage.removeItem(TOKEN_KEY);
@@ -268,6 +271,7 @@ function saveSettings() {
 function loadSettings() {
   let data = {};
   try { data = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch {}
+  restoredRecipeId = String(data.recipeSelect || '');
   if (!localStorage.getItem(STEPS_28_MIGRATION_KEY)) {
     if (data.steps === undefined || Number(data.steps) === 23) data.steps = '28';
     localStorage.setItem(STEPS_28_MIGRATION_KEY, new Date().toISOString());
@@ -278,6 +282,7 @@ function loadSettings() {
     if (element.type === 'checkbox') element.checked = Boolean(data[id]);
     else element.value = data[id];
   });
+  trackedWordSources = Array.isArray(data.wordSources) ? data.wordSources.filter(source => source && WORD_PROMPT_FIELDS.includes(source.field) && typeof source.content === 'string') : [];
   if (data.rememberToken) $('token').value = localStorage.getItem(TOKEN_KEY) || '';
   updateActiveCharacterLabel();
   updateApiStatus();
@@ -469,6 +474,21 @@ const dbClear = store => storeRequest(store, 'readwrite', objectStore => objectS
 const dbGet = (store, id) => storeRequest(store, 'readonly', objectStore => objectStore.get(id));
 const dbAll = store => storeRequest(store, 'readonly', objectStore => objectStore.getAll());
 
+// Commit related records together; caches are refreshed only after success.
+function commitRecords(writes = {}, removals = {}) {
+  const stores = [...new Set([...Object.keys(writes), ...Object.keys(removals)])];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(stores, 'readwrite');
+    tx.oncomplete = resolve;
+    tx.onabort = () => reject(tx.error || new Error('保存失败，本次修改已撤销'));
+    tx.onerror = () => {};
+    try {
+      for (const [name, records] of Object.entries(writes)) for (const record of records) tx.objectStore(name).put(record);
+      for (const [name, ids] of Object.entries(removals)) for (const id of ids) tx.objectStore(name).delete(id);
+    } catch (error) { tx.abort(); reject(error); }
+  });
+}
+
 function characters() {
   return readLocalLibrary(CHARACTERS_KEY, 'character');
 }
@@ -605,6 +625,7 @@ function renderCharacters() {
 }
 
 $('characterForm').onsubmit = event => {
+    try {
   event.preventDefault();
   const list = characters();
   const editId = $('characterEditId').value;
@@ -624,6 +645,7 @@ $('characterForm').onsubmit = event => {
   saveCharacters(list);
   resetCharacterForm();
   toast(old ? '人物档案已更新' : '人物档案已保存');
+    } catch (error) { toast(`保存失败：${error.message}`); }
 };
 
 $('cancelCharacterEdit').onclick = resetCharacterForm;
@@ -714,7 +736,8 @@ async function refreshData() {
 }
 
 function renderRecipeOptions() {
-  const current = $('recipeSelect').value;
+  const current = restoredRecipeId ?? $('recipeSelect').value;
+  restoredRecipeId = null;
   const options = recipesCache.map(recipe => `<option value="${escapeHTML(recipe.id)}">${escapeHTML(recipe.name)}</option>`).join('');
   $('recipeSelect').innerHTML = `<option value="">未关联配方</option>${options}`;
   $('importRecipeSelect').innerHTML = options || '<option value="">还没有配方</option>';
@@ -732,15 +755,32 @@ function updateActiveRecipeLabel() {
     : '生成后暂不关联配方，也可以先选择或新建配方';
 }
 
+function setRecipeAssociation(recipe) {
+  const previous = currentRecipe;
+  const sceneTag = localStorage.getItem(AUTO_SCENE_TAG_KEY) || '';
+  const oldTags = new Set(previous?.tags || []);
+  const retained = splitTags($('tags').value).filter(tag => !oldTags.has(tag) || tag === sceneTag);
+  $('tags').value = [...new Set([...retained, ...(recipe?.tags || [])])].join(', ');
+  $('recipeSelect').value = recipe?.id || '';
+  updateActiveRecipeLabel();
+}
+function syncArtistRecipe(preferredId = '') {
+  const prompt = normalizedWordPrompt($('artistPrompt').value);
+  const matches = recipesCache.filter(recipe => prompt && normalizedWordPrompt(recipe.artistPrompt) === prompt);
+  const preferred = matches.find(recipe => String(recipe.id) === String(preferredId));
+  setRecipeAssociation(preferred || (matches.length === 1 ? matches[0] : null));
+}
+
 function applyRecipe(recipe, includeParams = true) {
   if (!recipe) return;
+  trackedWordSources = trackedWordSources.filter(source => !['artistPrompt', 'positivePrompt', 'negativePrompt'].includes(source.field));
   $('artistPrompt').value = recipe.artistPrompt || '';
   $('positivePrompt').value = recipe.positivePrompt || '';
   $('negativePrompt').value = recipe.negativePrompt || '';
-  $('tags').value = (recipe.tags || []).join(', ');
+  setRecipeAssociation(recipe);
   if (includeParams) {
     if (Array.isArray(recipe.defaultParams?.vibes)) restoreVibeSelection(recipe.defaultParams.vibes, recipe.defaultParams.model);
-    Object.entries(recipe.defaultParams || {}).forEach(([key, value]) => {
+    Object.entries(pickParams(recipe.defaultParams || {})).forEach(([key, value]) => {
       const element = $(key);
       if (!element || value === undefined || value === null || (key === 'model' && !value)) return;
       if (element.type === 'checkbox') element.checked = Boolean(value);
@@ -759,7 +799,7 @@ $('recipeSelect').addEventListener('change', () => {
     applyRecipe(recipe);
     toast(`已载入配方：${recipe.name}`);
   } else {
-    updateActiveRecipeLabel();
+    setRecipeAssociation(null);
     saveSettings();
   }
 });
@@ -788,6 +828,7 @@ $('galleryNewRecipeBtn').onclick = () => openRecipeEditor();
 $('saveBundleBtn').onclick = () => openRecipeEditor(null, true);
 
 $('recipeForm').onsubmit = async event => {
+  try {
   event.preventDefault();
   const id = $('recipeEditId').value;
   const old = id ? await dbGet('recipes', id) : null;
@@ -818,6 +859,7 @@ $('recipeForm').onsubmit = async event => {
   await refreshData();
   applyRecipe(recipesCache.find(item => item.id === recipe.id));
   toast(id ? '配方已更新' : '配方档案已创建');
+  } catch (error) { toast(`操作失败：${error.message}`); }
 };
 
 function recipeCopyRow(label, value, key) {
@@ -843,12 +885,74 @@ function coverFor(recipe) {
     || null;
 }
 
+const WORD_PROMPT_FIELDS = ['scenePrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt'];
+let trackedWordSources = [];
+let wordSourceIndexRaw = null, wordSourceIndex = [];
+function normalizedWordPrompt(value) {
+  return String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').replace(/\s*,\s*/g, ',').trim().replace(/^,+|,+$/g, '');
+}
+function wordPromptParts(word) {
+  if (word.kind === 'bundle') return WORD_PROMPT_FIELDS.map(field => ({ field, content: bundleData(word)[field] || '' })).filter(part => part.content.trim());
+  const field = word.kind + 'Prompt';
+  return WORD_PROMPT_FIELDS.includes(field) && word.content ? [{ field, content: word.content }] : [];
+}
+function currentWordSourceIndex() {
+  const raw = localStorage.getItem(WORDS_KEY);
+  if (raw !== wordSourceIndexRaw) {
+    wordSourceIndexRaw = raw;
+    wordSourceIndex = words().map(word => ({ word, parts: wordPromptParts(word).map(part => ({ ...part, normalized: normalizedWordPrompt(part.content) })) }));
+  }
+  return wordSourceIndex;
+}
+function promptContainsWord(prompt, content, explicit = false) {
+  const haystack = normalizedWordPrompt(prompt), needle = normalizedWordPrompt(content);
+  if (!needle) return false;
+  if (haystack === needle) return true;
+  // Old images need a substantial complete phrase, not one common tag.
+  return (explicit || (needle.length >= 30 && needle.split(',').length >= 3)) && (',' + haystack + ',').includes(',' + needle + ',');
+}
+function snapshotWordSource(word, field, content) {
+  return { wordId: String(word.id), field, content, author: word.author || '', sourceUrl: word.sourceUrl || '', name: word.name || '' };
+}
+function trackWordSource(word, field, content, append = false) {
+  if (!WORD_PROMPT_FIELDS.includes(field)) return;
+  if (!append) trackedWordSources = trackedWordSources.filter(source => source.field !== field);
+  if (word) trackedWordSources.push(snapshotWordSource(word, field, content));
+}
+function inferredWordSources(item) {
+  const index = currentWordSourceIndex(), result = [];
+  for (const {word, parts} of index) {
+    if (!parts.length || !parts.every(part => promptContainsWord(item[part.field], part.content))) continue;
+    // Identical contents cannot tell us which entry was used.
+    if (parts.some(part => index.some(other => other.word.id !== word.id && other.parts.some(candidate => candidate.field === part.field && candidate.normalized === part.normalized)))) continue;
+    for (const part of parts) result.push(snapshotWordSource(word, part.field, part.content));
+  }
+  return result;
+}
+function collectedWordSources(item) {
+  const explicit = trackedWordSources.filter(source => promptContainsWord(item[source.field], source.content, true));
+  const seen = new Set(explicit.map(source => source.field + ':' + normalizedWordPrompt(source.content)));
+  return [...explicit, ...inferredWordSources(item).filter(source => !seen.has(source.field + ':' + normalizedWordPrompt(source.content)))].map(source => {
+    const word = currentWordSourceIndex().find(entry => String(entry.word.id) === String(source.wordId))?.word;
+    return word ? { ...source, author: word.author || '', sourceUrl: word.sourceUrl || '', name: word.name || '' } : source;
+  });
+}
+function artworkWordSearchText(item) {
+  const index = currentWordSourceIndex();
+  const sources = Array.isArray(item.wordSources) ? item.wordSources : inferredWordSources(item);
+  return sources.flatMap(source => {
+    if (!source || !WORD_PROMPT_FIELDS.includes(source.field) || !promptContainsWord(item[source.field], source.content, true)) return [];
+    const word = index.find(entry => String(entry.word.id) === String(source.wordId))?.word;
+    return word ? [word.author, word.sourceUrl] : [source.author, source.sourceUrl];
+  }).join(' ');
+}
+
 function artworkSearchText(item) {
   const recipe = recipesCache.find(value => value.id === item.recipeId);
   return [
     item.title, item.scenePrompt, item.characterPrompt, item.sourcePrompt, item.fullPrompt, item.artistPrompt,
     item.positivePrompt, item.negativePrompt, item.category, ...(item.tags || []),
-    item.sourceUrl, recipe?.name, recipe?.author, recipe?.sourceUrl, ...(recipe?.tags || [])
+    item.sourceUrl, artworkWordSearchText(item), recipe?.name, recipe?.author, recipe?.sourceUrl, ...(recipe?.tags || [])
   ].join(' ').toLowerCase();
 }
 
@@ -904,7 +1008,7 @@ function batchBarHTML(visibleIds = []) {
   if (!artworkSelectionMode) return '';
   const visible = visibleIds.map(String);
   const visibleSelected = visible.filter(id => selectedArtworkIds.has(id)).length;
-  return `<div class="batch-bar"><span>已选择 ${selectedArtworkIds.size} 张</span><button class="secondary" data-batch-all type="button">${visible.length && visibleSelected === visible.length ? '取消全选' : '全选当前'}</button><button class="secondary" data-batch-favorite type="button">收藏 / 取消</button><button class="secondary" data-batch-tag type="button">加标签</button><button class="secondary" data-batch-move type="button">更换配方</button><button class="danger-btn" data-batch-delete type="button">删除</button><button class="secondary" data-batch-cancel type="button">退出多选</button></div>`;
+  return `<div class="batch-bar"><span data-artwork-selection-count>已选择 ${selectedArtworkIds.size} 张</span><button class="secondary" data-batch-all type="button">${visible.length && visibleSelected === visible.length ? '取消全选' : '全选当前'}</button><button class="secondary" data-batch-favorite type="button">收藏 / 取消</button><button class="secondary" data-batch-tag type="button">加标签</button><button class="secondary" data-batch-move type="button">更换配方</button><button class="danger-btn" data-batch-delete type="button">删除</button><button class="secondary" data-batch-cancel type="button">退出多选</button></div>`;
 }
 
 function setArtworkSelectionMode(enabled) {
@@ -919,18 +1023,14 @@ function toggleArtworkSelection(id) {
   if (selectedArtworkIds.has(key)) selectedArtworkIds.delete(key);
   else selectedArtworkIds.add(key);
   document.querySelectorAll(`[data-image-id="${key}"],[data-library-image="${key}"]`).forEach(button => button.classList.toggle('selected', selectedArtworkIds.has(key)));
-  document.querySelectorAll('.batch-bar span').forEach(span => { span.textContent = `已选择 ${selectedArtworkIds.size} 张`; });
+  document.querySelectorAll('[data-artwork-selection-count]').forEach(span => { span.textContent = `已选择 ${selectedArtworkIds.size} 张`; });
 }
 
 async function batchFavoriteArtworks() {
   const items = selectedArtworks();
   if (!items.length) { toast('请先选择图片'); return; }
   const favorite = !items.every(item => item.favorite);
-  for (const item of items) {
-    item.favorite = favorite;
-    item.updatedAt = Date.now();
-    await dbPut('artworks', item);
-  }
+  await commitRecords({ artworks: items.map(item => ({ ...item, favorite, updatedAt: Date.now() })) });
   await refreshData();
   toast(favorite ? `已收藏 ${items.length} 张图片` : `已取消收藏 ${items.length} 张图片`);
 }
@@ -940,12 +1040,7 @@ async function batchDeleteArtworks() {
   if (!items.length) { toast('请先选择图片'); return; }
   if (!confirm(`永久删除选中的 ${items.length} 张图片？此操作无法撤销。`)) return;
   const ids = new Set(items.map(item => item.id));
-  for (const item of items) await dbDelete('artworks', item.id);
-  for (const recipe of recipesCache.filter(item => ids.has(item.coverArtworkId))) {
-    recipe.coverArtworkId = null;
-    recipe.updatedAt = Date.now();
-    await dbPut('recipes', recipe);
-  }
+  await commitRecords({ recipes: recipesCache.filter(item => ids.has(item.coverArtworkId)).map(recipe => ({ ...recipe, coverArtworkId: null, updatedAt: Date.now() })) }, { artworks: [...ids] });
   artworkSelectionMode = false;
   selectedArtworkIds.clear();
   await refreshData();
@@ -961,7 +1056,7 @@ function bindBatchBar(root, visibleIds) {
     renderRecipes();
     renderImageLibrary();
   };
-  root.querySelector('[data-batch-favorite]')?.addEventListener('click', batchFavoriteArtworks);
+  root.querySelector('[data-batch-favorite]')?.addEventListener('click', () => batchFavoriteArtworks().catch(error => toast(error.message)));
   root.querySelector('[data-batch-tag]')?.addEventListener('click', () => { $('batchTags').value = ''; showDialog('batchTagDialog'); });
   root.querySelector('[data-batch-move]')?.addEventListener('click', () => {
     if (!selectedArtworkIds.size) { toast('请先选择图片'); return; }
@@ -969,7 +1064,7 @@ function bindBatchBar(root, visibleIds) {
     $('moveRecipeSelect').value = '';
     showDialog('moveDialog');
   });
-  root.querySelector('[data-batch-delete]')?.addEventListener('click', batchDeleteArtworks);
+  root.querySelector('[data-batch-delete]')?.addEventListener('click', () => batchDeleteArtworks().catch(error => toast(error.message)));
   root.querySelector('[data-batch-cancel]')?.addEventListener('click', () => setArtworkSelectionMode(false));
 }
 
@@ -1171,18 +1266,19 @@ function inspectRecipe(recipe) {
     $('importIntoRecipe').onclick = () => { delete $('imageImportFile').dataset.recipeId; $('imageImportFile').click(); };
   } else {
     $('useRecipe').onclick = () => { applyRecipe(recipe); switchView('create'); toast('配方已放入创作台'); };
-    $('moveRecipeFront').onclick = () => moveRecipeToFront(recipe);
+    $('moveRecipeFront').onclick = () => moveRecipeToFront(recipe).catch(error => toast(error.message));
     $('favoriteRecipe').onclick = async () => {
-      recipe.favorite = !recipe.favorite;
-      recipe.updatedAt = Date.now();
-      await dbPut('recipes', recipe);
+    try {
+      const updated = { ...recipe, favorite: !recipe.favorite, updatedAt: Date.now() };
+      await dbPut('recipes', updated);
       await refreshData();
       inspectRecipe(recipesCache.find(item => item.id === recipe.id));
-      toast(recipe.favorite ? '已收藏配方' : '已取消收藏');
+      toast(updated.favorite ? '已收藏配方' : '已取消收藏');
+    } catch (error) { toast(`保存失败：${error.message}`); }
     };
     $('editRecipe').onclick = $('editRecipeBottom').onclick = () => openRecipeEditor(recipe);
     $('importIntoRecipe').onclick = () => { $('imageImportFile').dataset.recipeId = recipe.id; $('imageImportFile').click(); };
-    $('deleteRecipe').onclick = () => deleteRecipe(recipe);
+    $('deleteRecipe').onclick = () => deleteRecipe(recipe).catch(error => toast(error.message));
   }
   inspector.querySelectorAll('[data-image-id]').forEach(button => bindImageAction(button, Number(button.dataset.imageId)));
   document.querySelectorAll('[data-recipe-id]').forEach(button => button.classList.toggle('active', button.dataset.recipeId === recipe.id));
@@ -1196,9 +1292,7 @@ function inspectRecipe(recipe) {
 
 async function moveRecipeToFront(recipe) {
   const ranks = recipesCache.filter(item => item.id !== recipe.id).map(manualRecipeRank);
-  recipe.manualOrder = (ranks.length ? Math.min(...ranks) : 0) - 1;
-  recipe.updatedAt = Date.now();
-  await dbPut('recipes', recipe);
+  await dbPut('recipes', { ...recipe, manualOrder: (ranks.length ? Math.min(...ranks) : 0) - 1, updatedAt: Date.now() });
   $('gallerySort').value = 'manual';
   saveSettings();
   await refreshData();
@@ -1221,12 +1315,7 @@ function bindImageAction(button, id) {
 async function deleteRecipe(recipe) {
   const count = artworksCache.filter(item => item.recipeId === recipe.id).length;
   if (!confirm(`删除配方“${recipe.name}”？其中 ${count} 张图片将不再关联配方，不会删除图片。`)) return;
-  for (const artwork of artworksCache.filter(item => item.recipeId === recipe.id)) {
-    artwork.recipeId = '';
-    artwork.category = '未分类';
-    await dbPut('artworks', artwork);
-  }
-  await dbDelete('recipes', recipe.id);
+  await commitRecords({ artworks: artworksCache.filter(item => item.recipeId === recipe.id).map(artwork => ({ ...artwork, recipeId: '', category: '未分类', updatedAt: Date.now() })) }, { recipes: [recipe.id] });
   if ($('recipeSelect').value === recipe.id) $('recipeSelect').value = '';
   currentGalleryRecipeId = '';
   $('recipeInspector').className = 'sheet recipe-inspector empty-inspector';
@@ -1255,11 +1344,7 @@ async function deleteLibraryTag(tag) {
   const affected = artworksCache.filter(item => (item.tags || []).includes(tag));
   if (!affected.length) return;
   if (!confirm(`删除图片标签“${tag}”？\n\n它会从 ${affected.length} 张图片中移除，但不会删除图片。`)) return;
-  for (const item of affected) {
-    item.tags = (item.tags || []).filter(value => value !== tag);
-    item.updatedAt = Date.now();
-    await dbPut('artworks', item);
-  }
+  await commitRecords({ artworks: affected.map(item => ({ ...item, tags: (item.tags || []).filter(value => value !== tag), updatedAt: Date.now() })) });
   await refreshData();
   toast(`已从 ${affected.length} 张图片中删除标签“${tag}”`);
 }
@@ -1332,57 +1417,47 @@ function openImageDialog(item) {
   $('imageSetCover').disabled = !recipe;
   $('imageMove').onclick = () => { batchMoveActive = false; $('moveRecipeSelect').value = item.recipeId || ''; showDialog('moveDialog'); };
   $('saveImageTags').onclick = async () => {
-    item.tags = splitTags($('imageTags').value);
-    await dbPut('artworks', item);
+    try {
+    const updated = { ...item, tags: splitTags($('imageTags').value), updatedAt: Date.now() };
+    await dbPut('artworks', updated);
+    Object.assign(item, updated);
     await refreshData();
     toast('图片标签已保存，现在可以用它搜索');
+    } catch (error) { toast(`保存失败：${error.message}`); }
   };
   $('imageSetCover').onclick = async () => {
+    try {
     if (!recipe) return;
-    recipe.coverArtworkId = item.id;
-    recipe.updatedAt = Date.now();
-    await dbPut('recipes', recipe);
+    await dbPut('recipes', { ...recipe, coverArtworkId: item.id, updatedAt: Date.now() });
     await refreshData();
     inspectRecipe(recipesCache.find(value => value.id === recipe.id));
     toast('已设为配方封面');
+    } catch (error) { toast(`保存失败：${error.message}`); }
   };
   $('imageReuse').onclick = () => { reuseArtwork(item); closeDialog('imageDialog'); };
   $('imageDownload').onclick = () => downloadArtwork(item);
   $('imageDownloadJpeg').onclick = () => downloadArtworkJpeg(item, $('imageDownloadJpeg'));
-  $('imageDelete').onclick = () => deleteArtwork(item);
+  $('imageDelete').onclick = () => deleteArtwork(item).catch(error => toast(error.message));
   showDialog('imageDialog');
 }
 
-async function moveArtworkRecord(item, targetRecipeId) {
-  const oldRecipeId = item.recipeId || '';
-  item.recipeId = targetRecipeId;
-  item.category = recipesCache.find(recipe => recipe.id === targetRecipeId)?.name || '未分类';
-  item.updatedAt = Date.now();
-  await dbPut('artworks', item);
-  if (oldRecipeId) {
-    const oldRecipe = await dbGet('recipes', oldRecipeId);
-    if (oldRecipe?.coverArtworkId === item.id) {
-      oldRecipe.coverArtworkId = null;
-      oldRecipe.updatedAt = Date.now();
-      await dbPut('recipes', oldRecipe);
-    }
-  }
-  if (targetRecipeId) {
-    const newRecipe = await dbGet('recipes', targetRecipeId);
-    if (newRecipe && !newRecipe.coverArtworkId) {
-      newRecipe.coverArtworkId = item.id;
-      newRecipe.updatedAt = Date.now();
-      await dbPut('recipes', newRecipe);
-    }
-  }
+async function moveArtworkRecords(items, targetRecipeId) {
+  const target = recipesCache.find(recipe => recipe.id === targetRecipeId);
+  if (targetRecipeId && !target) throw new Error('目标配方已不存在');
+  const ids = new Set(items.filter(item => item.recipeId !== targetRecipeId).map(item => item.id));
+  const updates = recipesCache.filter(recipe => ids.has(recipe.coverArtworkId)).map(recipe => ({ ...recipe, coverArtworkId: null, updatedAt: Date.now() }));
+  if (target && !target.coverArtworkId && items.length) updates.push({ ...target, coverArtworkId: items[0].id, updatedAt: Date.now() });
+  await commitRecords({ artworks: items.map(item => ({ ...item, recipeId: targetRecipeId, category: target?.name || '未分类', updatedAt: Date.now() })), recipes: updates });
 }
+async function moveArtworkRecord(item, targetRecipeId) { return moveArtworkRecords([item], targetRecipeId); }
 
 $('confirmMoveBtn').onclick = async () => {
+  try {
   const targetRecipeId = $('moveRecipeSelect').value;
   if (batchMoveActive) {
     const items = selectedArtworks();
     if (!items.length) { toast('请先选择图片'); return; }
-    for (const item of items) await moveArtworkRecord(item, targetRecipeId);
+    await moveArtworkRecords(items, targetRecipeId);
     closeDialog('moveDialog');
     batchMoveActive = false;
     artworkSelectionMode = false;
@@ -1397,34 +1472,27 @@ $('confirmMoveBtn').onclick = async () => {
   closeDialog('imageDialog');
   await refreshData();
   toast('图片已重新归档');
+  } catch (error) { toast(`操作失败：${error.message}`); }
 };
 
 $('moveDialog').addEventListener('close', () => { batchMoveActive = false; });
 
 $('confirmBatchTags').onclick = async () => {
+  try {
   const tags = splitTags($('batchTags').value);
   const items = selectedArtworks();
   if (!tags.length) { toast('请先填写标签'); return; }
   if (!items.length) { toast('请先选择图片'); return; }
-  for (const item of items) {
-    item.tags = [...new Set([...(item.tags || []), ...tags])];
-    item.updatedAt = Date.now();
-    await dbPut('artworks', item);
-  }
+  await commitRecords({ artworks: items.map(item => ({ ...item, tags: [...new Set([...(item.tags || []), ...tags])], updatedAt: Date.now() })) });
   closeDialog('batchTagDialog');
   await refreshData();
   toast(`已给 ${items.length} 张图片添加标签`);
+  } catch (error) { toast(`操作失败：${error.message}`); }
 };
 
 async function deleteArtwork(item) {
   if (!confirm('删除这张图片及其生成记录？此操作不可恢复。')) return;
-  await dbDelete('artworks', item.id);
-  const owners = recipesCache.filter(recipe => recipe.coverArtworkId === item.id);
-  for (const owner of owners) {
-    owner.coverArtworkId = null;
-    owner.updatedAt = Date.now();
-    await dbPut('recipes', owner);
-  }
+  await commitRecords({ recipes: recipesCache.filter(recipe => recipe.coverArtworkId === item.id).map(owner => ({ ...owner, coverArtworkId: null, updatedAt: Date.now() })) }, { artworks: [item.id] });
   closeDialog('imageDialog');
   await refreshData();
   toast('图片记录已删除');
@@ -1500,6 +1568,7 @@ async function downloadArtworkJpeg(item, button) {
 }
 
 function reuseArtwork(item) {
+  trackedWordSources = structuredClone(Array.isArray(item.wordSources) ? item.wordSources : inferredWordSources(item));
   restoreVibeSelection(item.vibes || [], item.model);
   ['scenePrompt', 'characterPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model', 'size', 'steps', 'scale', 'seed', 'sampler', 'noiseSchedule'].forEach(key => {
     if (item[key] !== undefined && $(key)) $(key).value = item[key];
@@ -1542,6 +1611,8 @@ function renderPickerList() {
     recordLibraryUse(item.libraryType, item.recordId);
     const target = $(pickerTargetId);
     target.value = button.dataset.pickerMode === 'append' && target.value.trim() ? `${target.value.trim()}, ${item.value}` : item.value;
+    trackWordSource(item.libraryType === 'words' ? words().find(word => String(word.id) === String(item.recordId)) : null, pickerTargetId, item.value, button.dataset.pickerMode === 'append');
+    if (pickerTargetId === 'artistPrompt') syncArtistRecipe(item.libraryType === 'recipes' ? item.recordId : '');
     if (pickerKind === 'scene') setAutoSceneTag(item.name);
     saveSettings();
     closeDialog('pickerDialog');
@@ -1704,8 +1775,7 @@ function openWordEditor(id) {
   $('saveWordBtn').querySelector('span').textContent = '保存修改';
   $('cancelWordEdit').hidden = false;
   updateWordForm();
-  $('wordForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  $('wordName').focus();
+  openWordPanel();
 }
 
 function updateWordForm() {
@@ -1718,7 +1788,22 @@ function updateWordForm() {
 $('wordKind').addEventListener('change', updateWordForm);
 $('wordSearch').addEventListener('input', debounce(renderWords));
 $('wordFilter').addEventListener('change', renderWords);
-$('cancelWordEdit').onclick = resetWordForm;
+$('cancelWordEdit').onclick = () => { resetWordForm(); closeDialog('wordEditorDialog'); };
+let wordPanelScroll = 0;
+function openWordPanel() {
+  wordPanelScroll = window.scrollY;
+  showDialog('wordEditorDialog');
+  $('wordEditorDialog').scrollTop = 0;
+  $('wordName').focus({ preventScroll: true });
+}
+$('newWordBtn').onclick = () => {
+  if ($('wordEditId').value) resetWordForm();
+  openWordPanel();
+};
+$('closeWordEditor').onclick = () => closeDialog('wordEditorDialog');
+$('wordEditorDialog').addEventListener('close', () => {
+  if (!$('wordEditorDialog').open) window.scrollTo({ top: wordPanelScroll, behavior: 'instant' });
+});
 
 $('wordForm').onsubmit = event => {
   event.preventDefault();
@@ -1745,8 +1830,9 @@ $('wordForm').onsubmit = event => {
   };
   if (old) list.splice(list.findIndex(item => item.id === editId), 1, word);
   else list.unshift(word);
-  saveWords(list);
+  try { saveWords(list); } catch (error) { toast(`保存失败：${error.message}`); return; }
   resetWordForm();
+  closeDialog('wordEditorDialog');
   toast(old ? '词条已更新' : '词条已保存');
 };
 
@@ -1757,12 +1843,14 @@ function useWord(id) {
   if (word.kind === 'bundle') {
     const bundle = bundleData(word);
     ['artistPrompt', 'positivePrompt', 'negativePrompt'].forEach(key => {
-      if (bundle[key] !== undefined) $(key).value = bundle[key];
+      if (bundle[key] !== undefined) { $(key).value = bundle[key]; trackWordSource(word, key, bundle[key]); }
     });
   } else {
     $(`${word.kind}Prompt`).value = word.content || '';
+    trackWordSource(word, `${word.kind}Prompt`, word.content || '');
     if (word.kind === 'scene') setAutoSceneTag(word.name);
   }
+  if (word.kind === 'artist' || word.kind === 'bundle') syncArtistRecipe();
   saveSettings();
   switchView('create');
   toast('已放入创作台');
@@ -1776,6 +1864,7 @@ function collectMeta() {
     return prompt && currentCharacterPrompt.includes(prompt);
   });
   return {
+    wordSources: collectedWordSources(Object.fromEntries(WORD_PROMPT_FIELDS.map(field => [field, $(field).value]))),
     title: $('scenePrompt').value.trim().slice(0, 42) || recipe?.name || '未命名镜头',
     scenePrompt: $('scenePrompt').value.trim(), characterPrompt: currentCharacterPrompt,
     characterIds: linkedCharacters.map(character => character.id), characterNames: linkedCharacters.map(character => character.name),
@@ -2336,13 +2425,14 @@ async function backupSelection(scope = 'all', startDate = '', endDate = '', sele
   const selectedArtworks = types.has('artworks') ? allArtworks.filter(item => itemInDateRange(item, bounds)) : [];
   const linkedRecipeIds = new Set(selectedArtworks.map(item => String(item.recipeId || '')).filter(Boolean));
   const linkedCharacterIds = new Set(selectedArtworks.flatMap(artworkCharacterIds));
+  const linkedWordIds = new Set(selectedArtworks.flatMap(item => (Array.isArray(item.wordSources) ? item.wordSources : []).filter(Boolean).map(source => String(source.wordId || ''))));
   const linkedVibeIds = new Set(selectedArtworks.flatMap(item => (item.vibes || []).map(entry => entry.id)));
   for (const recipe of allRecipes.filter(item => linkedRecipeIds.has(String(item.id)))) for (const item of recipe.defaultParams?.vibes || []) linkedVibeIds.add(item.id);
   for (const mix of allVibes.filter(item => item.type === 'bundle' && itemInDateRange(item,bounds))) for (const item of mix.items) linkedVibeIds.add(item.id);
   return {
     artworks: selectedArtworks,
     recipes: types.has('recipes') ? allRecipes.filter(item => itemInDateRange(item, bounds) || linkedRecipeIds.has(String(item.id))) : [],
-    words: types.has('words') ? allWords.filter(item => itemInDateRange(item, bounds)) : [],
+    words: types.has('words') ? allWords.filter(item => itemInDateRange(item, bounds) || linkedWordIds.has(String(item.id))) : [],
     characters: types.has('characters') ? allCharacters.filter(item => itemInDateRange(item, bounds) || linkedCharacterIds.has(String(item.id))) : [],
     vibes: allVibes.filter(item => itemInDateRange(item,bounds) || linkedVibeIds.has(item.id)), collections
   };
@@ -2395,6 +2485,10 @@ $('backupForm').onsubmit = async event => {
       const artwork = { ...withTransferId(source, 'artwork', sourceDeviceId), contentHash: source.contentHash || await blobFingerprint(source.blob) };
       if (!source.transferId || !source.contentHash) await dbPut('artworks', artwork);
       const exportedArtwork = { ...artwork };
+      if (Array.isArray(artwork.wordSources)) exportedArtwork.wordSources = artwork.wordSources.filter(Boolean).map(source => {
+        const word = currentWordSourceIndex().find(entry => String(entry.word.id) === String(source.wordId))?.word;
+        return word ? { ...source, author: word.author || '', sourceUrl: word.sourceUrl || '', name: word.name || '' } : source;
+      });
       if (!types.has('recipes')) exportedArtwork.recipeId = '';
       if (!types.has('characters')) {
         exportedArtwork.characterId = '';
@@ -2458,6 +2552,7 @@ function mergeRecord(existing, incoming, type = '') {
   if (type === 'recipe') merged.defaultParams = { ...(incoming.defaultParams || {}), ...(existing.defaultParams || {}) };
   if (type === 'recipe' && !merged.coverArtworkId && incoming.coverArtworkId) merged._incomingCoverArtworkId = incoming.coverArtworkId;
   if (type === 'artwork') {
+    if (!Array.isArray(existing.wordSources) && Array.isArray(incoming.wordSources)) merged.wordSources = incoming.wordSources;
     merged.characterIds = [...new Set([...artworkCharacterIds(existing), ...artworkCharacterIds(incoming)])];
     merged.characterId = merged.characterIds[0] || '';
   }
@@ -2572,6 +2667,9 @@ async function analyzeBackupImport(data) {
   const characterPlan = prepareRecordPlan(data.characters, existingCharacters, characterContentKey, 'character');
   const recipePlan = prepareRecordPlan(data.recipes, existingRecipes, recipeContentKey, 'recipe');
   const wordPlan = prepareRecordPlan(data.words, existingWords, wordContentKey, 'word');
+  for (const artwork of data.artworks) if (Array.isArray(artwork.wordSources)) {
+    artwork.wordSources = artwork.wordSources.filter(source => source && typeof source.content === 'string').map(source => ({ ...source, wordId: wordPlan.idMap.get(String(source.wordId)) || '' }));
+  }
   const artworkIdMap = new Map();
   const additions = [];
   const merges = [];

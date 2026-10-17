@@ -374,5 +374,5 @@ function renderGalleryFacets(host) {
   const clear = host.querySelector('#clearGalleryFacets');
   if (clear) clear.onclick = () => { Object.keys(galleryFacets).forEach(key => galleryFacets[key] = key === 'favorite' ? false : ''); renderImageLibrary(); };
   const remove = host.querySelector('#removeGalleryTag');
-  if (remove) remove.onclick = () => deleteLibraryTag(galleryFacets.tag);
+  if (remove) remove.onclick = () => deleteLibraryTag(galleryFacets.tag).catch(error => toast(error.message));
 }
