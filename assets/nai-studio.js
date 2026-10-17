@@ -773,6 +773,7 @@ function openRecipeEditor(recipe = null, prefillCurrent = false) {
   $('recipePositive').value = recipe?.positivePrompt || (prefillCurrent ? $('positivePrompt').value : '');
   $('recipeNegative').value = recipe?.negativePrompt || (prefillCurrent ? $('negativePrompt').value : '');
   $('recipeTags').value = (recipe?.tags || (prefillCurrent ? splitTags($('tags').value) : [])).join(', ');
+  $('recipeAuthor').value = recipe?.author || '';
   $('recipeNote').value = recipe?.note || '';
   $('recipeSourceUrl').value = recipe?.sourceUrl || '';
   $('recipeSteps').value = Number(params.steps) || 28;
@@ -798,6 +799,7 @@ $('recipeForm').onsubmit = async event => {
     positivePrompt: $('recipePositive').value.trim(),
     negativePrompt: $('recipeNegative').value.trim(),
     tags: splitTags($('recipeTags').value),
+    author: $('recipeAuthor').value.trim(),
     note: $('recipeNote').value.trim(),
     sourceUrl: $('recipeSourceUrl').value.trim(),
     coverArtworkId: old?.coverArtworkId || null,
@@ -846,7 +848,7 @@ function artworkSearchText(item) {
   return [
     item.title, item.scenePrompt, item.characterPrompt, item.sourcePrompt, item.fullPrompt, item.artistPrompt,
     item.positivePrompt, item.negativePrompt, item.category, ...(item.tags || []),
-    item.sourceUrl, recipe?.name, recipe?.sourceUrl, ...(recipe?.tags || [])
+    item.sourceUrl, recipe?.name, recipe?.author, recipe?.sourceUrl, ...(recipe?.tags || [])
   ].join(' ').toLowerCase();
 }
 
@@ -979,6 +981,107 @@ function collapseRecipeInspector() {
   document.querySelectorAll('[data-recipe-id]').forEach(button => button.classList.remove('active'));
 }
 
+const authorSelections = {
+  recipes: { active: false, ids: new Set() },
+  words: { active: false, ids: new Set() }
+};
+let pendingAuthorEdit = null;
+function authorSelectionRecords(type) { return type === 'recipes' ? recipesCache : words(); }
+function renderAuthorSelectionLibrary(type) { (type === 'recipes' ? renderRecipes : renderWords)(); }
+function setAuthorSelectionMode(type, active) {
+  const state = authorSelections[type];
+  state.active = active;
+  if (!active) state.ids.clear();
+  if (type === 'recipes') collapseRecipeInspector();
+  renderAuthorSelectionLibrary(type);
+}
+function toggleAuthorSelection(type, id) {
+  const state = authorSelections[type], key = String(id);
+  if (state.ids.has(key)) state.ids.delete(key); else state.ids.add(key);
+  renderAuthorSelectionLibrary(type);
+}
+function renderAuthorSelection(type, visibleIds) {
+  const state = authorSelections[type], valid = new Set(authorSelectionRecords(type).map(item => String(item.id)));
+  for (const id of state.ids) if (!valid.has(id)) state.ids.delete(id);
+  const button = $(type === 'recipes' ? 'recipeMultiSelectBtn' : 'wordMultiSelectBtn');
+  button.textContent = state.active ? '退出多选' : '多选';
+  button.setAttribute('aria-pressed', String(state.active));
+  button.onclick = () => setAuthorSelectionMode(type, !state.active);
+  const host = $(type === 'recipes' ? 'recipeAuthorBatchBar' : 'wordAuthorBatchBar');
+  host.hidden = !state.active;
+  if (!state.active) { host.replaceChildren(); return; }
+  const ids = visibleIds.map(String), all = ids.length > 0 && ids.every(id => state.ids.has(id));
+  host.innerHTML = `<div class="batch-bar"><span role="status">已选择 ${state.ids.size} ${type === 'recipes' ? '份配方' : '个词条'}</span><button class="secondary" type="button" data-author-select-all ${ids.length ? '' : 'disabled'}>${all ? '取消全选当前' : '全选当前'}</button><button class="secondary" type="button" data-author-batch-edit ${state.ids.size ? '' : 'disabled'}>批量作者备注</button><button class="secondary" type="button" data-author-selection-cancel>退出多选</button></div>`;
+  host.querySelector('[data-author-select-all]').onclick = () => {
+    for (const id of ids) if (all) state.ids.delete(id); else state.ids.add(id);
+    renderAuthorSelectionLibrary(type);
+  };
+  host.querySelector('[data-author-batch-edit]').onclick = () => openBatchAuthor(type);
+  host.querySelector('[data-author-selection-cancel]').onclick = () => setAuthorSelectionMode(type, false);
+}
+function openBatchAuthor(type) {
+  const records = authorSelectionRecords(type).filter(item => authorSelections[type].ids.has(String(item.id)));
+  if (!records.length) { toast('请先选择条目'); return; }
+  pendingAuthorEdit = { type, ids: records.map(item => String(item.id)) };
+  const authors = new Set(records.map(item => item.author || ''));
+  $('batchAuthorInput').value = authors.size === 1 ? records[0].author || '' : '';
+  $('batchAuthorSummary').textContent = `将统一修改 ${records.length} ${type === 'recipes' ? '份配方' : '个词条'}的作者备注。`;
+  $('batchAuthorError').textContent = '';
+  showDialog('batchAuthorDialog');
+  $('batchAuthorInput').focus();
+}
+async function saveBatchAuthors(type, ids, author) {
+  if (!['recipes', 'words'].includes(type)) throw new Error('不支持的资料库');
+  author = String(author || '').trim();
+  const selected = new Set(ids.map(String)), updatedAt = Date.now();
+  let count = 0;
+  if (type === 'words') {
+    const list = words().map(item => {
+      if (!selected.has(String(item.id))) return item;
+      count++;
+      return { ...item, author, updatedAt };
+    });
+    if (!count) throw new Error('选中的词条已不存在，请重新选择');
+    localStorage.setItem(WORDS_KEY, JSON.stringify(list));
+    renderWords();
+  } else {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('recipes', 'readwrite'), store = tx.objectStore('recipes');
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(tx.error || new Error('保存失败，所选配方保持原样'));
+      tx.onerror = () => {};
+      try {
+        for (const id of selected) {
+          const request = store.get(id);
+          request.onsuccess = () => {
+            if (!request.result) return;
+            try { store.put({ ...request.result, author, updatedAt }); count++; }
+            catch (error) { tx.abort(); reject(error); }
+          };
+        }
+      } catch (error) { tx.abort(); reject(error); }
+    });
+    if (!count) throw new Error('选中的配方已不存在，请重新选择');
+    await refreshData();
+  }
+  return count;
+}
+$('batchAuthorDialog').addEventListener('close', () => { if (!$('batchAuthorDialog').open) pendingAuthorEdit = null; });
+$('batchAuthorForm').onsubmit = async event => {
+  event.preventDefault();
+  if (!pendingAuthorEdit || $('saveBatchAuthorBtn').disabled) return;
+  const { type, ids } = pendingAuthorEdit, author = $('batchAuthorInput').value.trim();
+  $('saveBatchAuthorBtn').disabled = true;
+  $('batchAuthorError').textContent = '';
+  try {
+    const count = await saveBatchAuthors(type, ids, author);
+    closeDialog('batchAuthorDialog');
+    setAuthorSelectionMode(type, false);
+    toast(`已${author ? '更新' : '清除'} ${count} ${type === 'recipes' ? '份配方' : '个词条'}的作者备注`);
+  } catch (error) { $('batchAuthorError').textContent = `保存失败：${error.message}`; }
+  finally { $('saveBatchAuthorBtn').disabled = false; }
+};
+
 function renderRecipes() {
   if (!db) return;
   restoreRecipeInspectorHome();
@@ -989,9 +1092,10 @@ function renderRecipes() {
   const matchingRecipeIds = new Set(matchingArtworks.map(item => item.recipeId || '__uncategorized__'));
   let list = views.filter(recipe => !query || matchingRecipeIds.has(recipe.id) || [
     recipe.name, recipe.artistPrompt, recipe.positivePrompt, recipe.negativePrompt,
-    recipe.note, recipe.sourceUrl, ...(recipe.tags || [])
+    recipe.author, recipe.note, recipe.sourceUrl, ...(recipe.tags || [])
   ].join(' ').toLowerCase().includes(query));
-  if (query && matchingArtworks.length) {
+  if (authorSelections.recipes.active) list = list.filter(recipe => !recipe.virtual);
+  if (query && matchingArtworks.length && !authorSelections.recipes.active) {
     const searchView = {
       id: '__search__', name: `图片搜索：${$('gallerySearch').value.trim()}`, artistPrompt: '',
       positivePrompt: '', negativePrompt: '', tags: [`${matchingArtworks.length} 张命中`], virtual: true,
@@ -1001,7 +1105,9 @@ function renderRecipes() {
     views.unshift(searchView);
     currentGalleryRecipeId = searchView.id;
   } else if (currentGalleryRecipeId === '__search__') currentGalleryRecipeId = '';
+  renderAuthorSelection('recipes', list.filter(recipe => !recipe.virtual).map(recipe => recipe.id));
   const grid = $('recipeGrid');
+  grid.classList.toggle('recipe-selection-mode', authorSelections.recipes.active);
   if (!list.length) {
     grid.innerHTML = `<div class="empty"><div><b>${recipesCache.length ? '没有匹配的配方' : '还没有配方档案'}</b><span>解析一张 NovelAI PNG，或手动建立第一份画师配方。</span><div class="empty-recipe-call"><button class="secondary" id="emptyImport">解析图片</button><button class="primary" id="emptyCreate">新建配方</button></div></div></div>`;
     $('emptyImport').onclick = () => $('imageImportFile').click();
@@ -1013,14 +1119,14 @@ function renderRecipes() {
       const visual = cover
         ? `<img class="recipe-cover" src="${artworkUrl(cover.blob)}" alt="${escapeHTML(recipe.name)}封面">`
         : '<div class="recipe-cover empty-cover">等待第一张立图</div>';
-      return `<button class="recipe-card${currentGalleryRecipeId === recipe.id ? ' active' : ''}" data-recipe-id="${escapeHTML(recipe.id)}">${visual}<div class="recipe-card-body"><div class="recipe-card-title">${recipe.favorite ? `${icon('star')} ` : ''}${escapeHTML(recipe.name)}</div><div class="recipe-card-meta"><span>${count} 张立图</span><span>${escapeHTML((recipe.tags || [])[0] || '未标记')}</span></div></div></button>`;
+      return `<button class="recipe-card${currentGalleryRecipeId === recipe.id ? ' active' : ''}${authorSelections.recipes.active && authorSelections.recipes.ids.has(String(recipe.id)) ? ' selected' : ''}" ${authorSelections.recipes.active ? `aria-pressed="${authorSelections.recipes.ids.has(String(recipe.id))}"` : ''} data-recipe-id="${escapeHTML(recipe.id)}">${authorSelections.recipes.active ? `<span class="select-mark" aria-hidden="true">${icon('check')}</span>` : ''}${visual}<div class="recipe-card-body"><div class="recipe-card-title">${recipe.favorite ? `${icon('star')} ` : ''}${escapeHTML(recipe.name)}</div><div class="recipe-card-meta"><span>${count} 张立图</span><span>${escapeHTML((recipe.tags || [])[0] || '未标记')}</span></div></div></button>`;
     }).join('');
     grid.querySelectorAll('[data-recipe-id]').forEach(button => {
-      button.onclick = () => currentGalleryRecipeId === button.dataset.recipeId ? collapseRecipeInspector() : inspectRecipe(list.find(recipe => recipe.id === button.dataset.recipeId));
+      button.onclick = () => authorSelections.recipes.active ? toggleAuthorSelection('recipes', button.dataset.recipeId) : currentGalleryRecipeId === button.dataset.recipeId ? collapseRecipeInspector() : inspectRecipe(list.find(recipe => recipe.id === button.dataset.recipeId));
     });
   }
   if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('recipes', list, grid, '.recipe-card');
-  if (currentGalleryRecipeId) {
+  if (currentGalleryRecipeId && !authorSelections.recipes.active) {
     const fresh = list.find(recipe => recipe.id === currentGalleryRecipeId);
     if (fresh) inspectRecipe(fresh);
     else collapseRecipeInspector();
@@ -1048,7 +1154,7 @@ function inspectRecipe(recipe) {
   const reusable = recipe.virtualKind === 'search'
     ? '<p class="security-note">集中展示命中图片标签、标题、画面提示词或所属配方的结果。打开图片可以继续补标签。</p>'
     : recipe.virtual ? '<p class="security-note">这里收纳尚未归入配方的图片。打开任一图片即可移动、复制或删除。</p>'
-    : `<div class="recipe-copy-list">${recipeCopyRow('画师串', recipe.artistPrompt, 'artistPrompt')}${recipeCopyRow('正面提示词', recipe.positivePrompt, 'positivePrompt')}${recipeCopyRow('负面提示词', recipe.negativePrompt, 'negativePrompt')}</div>${recipe.note || recipe.sourceUrl ? `<div class="recipe-notes"><b>备注与来源</b>${recipe.note ? `<p>${escapeHTML(recipe.note)}</p>` : ''}${safeHttpUrl(recipe.sourceUrl) ? `<a class="source-link" href="${escapeHTML(safeHttpUrl(recipe.sourceUrl))}" target="_blank" rel="noopener noreferrer">打开来源链接</a>` : recipe.sourceUrl ? `<p>${escapeHTML(recipe.sourceUrl)}</p>` : ''}</div>` : ''}`;
+    : `<div class="recipe-copy-list">${recipeCopyRow('画师串', recipe.artistPrompt, 'artistPrompt')}${recipeCopyRow('正面提示词', recipe.positivePrompt, 'positivePrompt')}${recipeCopyRow('负面提示词', recipe.negativePrompt, 'negativePrompt')}</div>${recipe.author || recipe.note || recipe.sourceUrl ? `<div class="recipe-notes"><b>作者、备注与来源</b>${recipe.author ? `<p>作者：${escapeHTML(recipe.author)}</p>` : ''}${recipe.note ? `<p>${escapeHTML(recipe.note)}</p>` : ''}${safeHttpUrl(recipe.sourceUrl) ? `<a class="source-link" href="${escapeHTML(safeHttpUrl(recipe.sourceUrl))}" target="_blank" rel="noopener noreferrer">打开来源链接</a>` : recipe.sourceUrl ? `<p>${escapeHTML(recipe.sourceUrl)}</p>` : ''}</div>` : ''}`;
   const bottomActions = recipe.virtual ? '' : '<div class="inspector-actions"><button class="secondary" id="editRecipeBottom" type="button">编辑配方</button><button class="danger-btn" id="deleteRecipe" type="button">删除配方</button></div>';
   const imageIds = images.map(item => item.id);
   const selectionTools = `<button class="mini-action" id="selectRecipeImages" type="button">${artworkSelectionMode ? '退出多选' : '多选'}</button>`;
@@ -1486,7 +1592,7 @@ function openPicker(kind, targetId = `${kind}Prompt`) {
     const recipeItems = ['scene', 'character'].includes(kind) ? [] : recipesCache.map(recipe => ({
       ...pickerRecordInfo(recipe, 'recipes'),
       id: `recipe-${recipe.id}`, name: recipe.name, source: '配方档案', value: recipe[`${kind}Prompt`] || '', favorite: Boolean(recipe.favorite),
-      search: searchableText(recipe.name, recipe[`${kind}Prompt`], recipe.tags, recipe.note, recipe.sourceUrl)
+      search: searchableText(recipe.name, recipe[`${kind}Prompt`], recipe.tags, recipe.author, recipe.note, recipe.sourceUrl)
     }));
     const wordItems = words().flatMap(word => {
       const value = word.kind === kind ? word.content || '' : word.kind === 'bundle' ? bundleData(word)[`${kind}Prompt`] || '' : '';
@@ -1521,6 +1627,7 @@ function renderWords() {
       word.category, word.author, word.note, word.sourceUrl, ...(word.tags || [])
     ].join(' ').toLowerCase().includes(query));
   });
+  renderAuthorSelection('words', list.map(word => word.id));
   $('wordList').innerHTML = list.length ? list.map(word => {
     const bundle = word.kind === 'bundle' ? bundleData(word) : null;
     const summary = bundle
@@ -1533,7 +1640,7 @@ function renderWords() {
     const provenance = word.author || word.note || word.sourceUrl
       ? `<div class="word-provenance">${word.author ? `<span title="${escapeHTML(word.author)}">作者：${escapeHTML(word.author)}</span>` : ''}${word.note ? `<span title="${escapeHTML(word.note)}">备注：${escapeHTML(word.note)}</span>` : ''}${safeSource ? `<a class="source-link" href="${escapeHTML(safeSource)}" target="_blank" rel="noopener noreferrer">打开来源</a>` : word.sourceUrl ? `<span>来源：${escapeHTML(word.sourceUrl)}</span>` : ''}</div>`
       : '';
-    return `<article class="word-row${expandedWordId === String(word.id) ? ' expanded' : ''}"><button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" aria-expanded="${expandedWordId === String(word.id)}"><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${escapeHTML(word.id)}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${escapeHTML(word.id)}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
+    return `<article class="word-row${authorSelections.words.active ? ' word-selection-mode' : ''}${authorSelections.words.active && authorSelections.words.ids.has(String(word.id)) ? ' selected' : ''}${expandedWordId === String(word.id) ? ' expanded' : ''}">${authorSelections.words.active ? `<label class="word-bulk-select"><input type="checkbox" data-word-select="${escapeHTML(word.id)}" aria-label="选择${escapeHTML(word.name)}" ${authorSelections.words.ids.has(String(word.id)) ? 'checked' : ''}></label>` : ''}<button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" ${authorSelections.words.active ? `aria-pressed="${authorSelections.words.ids.has(String(word.id))}"` : `aria-expanded="${expandedWordId === String(word.id)}"`}><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${authorSelections.words.active ? (authorSelections.words.ids.has(String(word.id)) ? '已选择' : '未选择') : expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${escapeHTML(word.id)}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${escapeHTML(word.id)}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
   }).join('') : '<div class="empty"><div><b>散词库还是空的</b><span>保存单独词条，或用结构化表单保存整套配方。</span></div></div>';
   if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('words', list, $('wordList'), '.word-row');
   document.querySelectorAll('[data-word-copy]').forEach(button => button.onclick = () => {
@@ -1545,7 +1652,9 @@ function renderWords() {
     copyText(bundleData(word)[button.dataset.bundleCopy] || '', button);
   });
   document.querySelectorAll('[data-word-use]').forEach(button => button.onclick = () => useWord(button.dataset.wordUse));
+  $('wordList').querySelectorAll('[data-word-select]').forEach(input => input.onchange = () => toggleAuthorSelection('words', input.dataset.wordSelect));
   document.querySelectorAll('[data-word-expand]').forEach(button => button.onclick = () => {
+    if (authorSelections.words.active) { toggleAuthorSelection('words', button.dataset.wordExpand); return; }
     expandedWordId = expandedWordId === button.dataset.wordExpand ? '' : button.dataset.wordExpand;
     renderWords();
   });

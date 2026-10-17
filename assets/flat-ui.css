@@ -340,3 +340,23 @@ html[data-theme] .image-tag-editor {background:var(--input);border:0;border-radi
 #imageDialog [hidden] {display:none!important}
 #imageCopyAll {width:auto;min-height:44px}
 @media(max-width:760px) {.gallery-facet-fields {grid-template-columns:minmax(0,1fr)} }
+
+/* Selection is local to recipes or words and does not change image selection. */
+.recipe-card.selected {outline:2px solid var(--signal);outline-offset:3px}
+.word-row.word-selection-mode {display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px;align-items:start}
+.word-selection-mode>.word-row-details {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px}
+.word-selection-mode .word-kind {grid-column:1/-1}
+.word-selection-mode .word-actions {flex-wrap:wrap;justify-content:flex-end}
+.word-bulk-select {display:flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;cursor:pointer}
+.word-bulk-select input {width:18px;height:18px;min-height:18px;padding:0;accent-color:var(--signal)}
+.word-row.word-selection-mode.selected {background:var(--input)}
+#recipeAuthorBatchBar[hidden],#wordAuthorBatchBar[hidden] {display:none!important}
+#batchAuthorSummary {font-size:13px;color:var(--muted);line-height:1.8}
+#batchAuthorError:empty {display:none}
+@media (max-width:760px), (max-width:1100px) and (pointer:coarse) {
+  .word-row.word-selection-mode {display:grid;grid-template-columns:44px minmax(0,1fr);gap:0}
+  .word-selection-mode>.word-row-details {grid-column:1/-1;display:none}
+  .word-selection-mode.expanded>.word-row-details {display:grid}
+  .word-selection-mode .word-mobile-summary {min-width:0;padding-left:4px}
+  #recipeAuthorBatchBar button,#wordAuthorBatchBar button {min-height:44px}
+}
