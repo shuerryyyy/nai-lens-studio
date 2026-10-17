@@ -570,7 +570,7 @@ function renderCharacters() {
   const list = characters().filter(character => !query || [
     character.name, character.fullPrompt, character.gender, character.hair, character.eyes,
     character.skin, character.body, character.features, character.outfit,
-    character.naturalAppearance, ...(character.tags || [])
+    character.naturalAppearance, character.sourceUrl, ...(character.tags || [])
   ].join(' ').toLowerCase().includes(query));
   listElement.innerHTML = list.length ? list.map(character => {
     const prompt = characterPrompt(character);
@@ -846,7 +846,7 @@ function artworkSearchText(item) {
   return [
     item.title, item.scenePrompt, item.characterPrompt, item.sourcePrompt, item.fullPrompt, item.artistPrompt,
     item.positivePrompt, item.negativePrompt, item.category, ...(item.tags || []),
-    recipe?.name, ...(recipe?.tags || [])
+    item.sourceUrl, recipe?.name, recipe?.sourceUrl, ...(recipe?.tags || [])
   ].join(' ').toLowerCase();
 }
 
@@ -1022,12 +1022,12 @@ function renderRecipes() {
   if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('recipes', list, grid, '.recipe-card');
   if (currentGalleryRecipeId) {
     const fresh = list.find(recipe => recipe.id === currentGalleryRecipeId);
-    if (fresh) inspectRecipe(fresh, false);
+    if (fresh) inspectRecipe(fresh);
     else collapseRecipeInspector();
   }
 }
 
-function inspectRecipe(recipe, scroll = true) {
+function inspectRecipe(recipe) {
   if (!recipe) return;
   currentGalleryRecipeId = recipe.id;
   const inspector = $('recipeInspector');
@@ -1071,7 +1071,7 @@ function inspectRecipe(recipe, scroll = true) {
       recipe.updatedAt = Date.now();
       await dbPut('recipes', recipe);
       await refreshData();
-      inspectRecipe(recipesCache.find(item => item.id === recipe.id), false);
+      inspectRecipe(recipesCache.find(item => item.id === recipe.id));
       toast(recipe.favorite ? '已收藏配方' : '已取消收藏');
     };
     $('editRecipe').onclick = $('editRecipeBottom').onclick = () => openRecipeEditor(recipe);
@@ -1080,12 +1080,11 @@ function inspectRecipe(recipe, scroll = true) {
   }
   inspector.querySelectorAll('[data-image-id]').forEach(button => bindImageAction(button, Number(button.dataset.imageId)));
   document.querySelectorAll('[data-recipe-id]').forEach(button => button.classList.toggle('active', button.dataset.recipeId === recipe.id));
-  if (matchMedia('(max-width:760px), (max-width:1100px) and (pointer:coarse)').matches) {
+  if (matchMedia('(max-width:1100px)').matches) {
     const card = document.querySelector(`[data-recipe-id="${CSS.escape(String(recipe.id))}"]`);
     if (card) (card.closest('.folder-item') || card).after(inspector);
   } else {
     restoreRecipeInspectorHome();
-    if (scroll && matchMedia('(max-width:1100px)').matches) setTimeout(() => inspector.scrollIntoView({ behavior: 'smooth', block: 'start' }), 30);
   }
 }
 
@@ -1097,7 +1096,7 @@ async function moveRecipeToFront(recipe) {
   $('gallerySort').value = 'manual';
   saveSettings();
   await refreshData();
-  inspectRecipe(recipesCache.find(item => item.id === recipe.id), false);
+  inspectRecipe(recipesCache.find(item => item.id === recipe.id));
   toast('已切换为手动顺序，并把这份配方移到最前');
 }
 
@@ -1238,7 +1237,7 @@ function openImageDialog(item) {
     recipe.updatedAt = Date.now();
     await dbPut('recipes', recipe);
     await refreshData();
-    inspectRecipe(recipesCache.find(value => value.id === recipe.id), false);
+    inspectRecipe(recipesCache.find(value => value.id === recipe.id));
     toast('已设为配方封面');
   };
   $('imageReuse').onclick = () => { reuseArtwork(item); closeDialog('imageDialog'); };
@@ -1933,10 +1932,10 @@ $('generateBtn').onclick = async () => {
 };
 $('cancelGenerateBtn').onclick = () => generationController?.abort();
 
-matchMedia('(max-width:760px), (max-width:1100px) and (pointer:coarse)').addEventListener('change', () => {
+matchMedia('(max-width:1100px)').addEventListener('change', () => {
   if (!db) return;
   renderImageLibrary();
-  if (currentGalleryRecipeId) inspectRecipe(recipesCache.find(item => item.id === currentGalleryRecipeId), false);
+  renderRecipes();
 });
 
 function readNullTerminated(bytes, start) {
@@ -2148,7 +2147,7 @@ $('imageImportForm').onsubmit = async event => {
   closeDialog('imageImportDialog');
   pendingImport = null;
   await refreshData();
-  if (recipeId) inspectRecipe(recipesCache.find(item => item.id === recipeId), false);
+  if (recipeId) inspectRecipe(recipesCache.find(item => item.id === recipeId));
   switchView('gallery');
   toast(recipeId ? '图片与配方已归档' : '图片已保存，未关联配方');
 };
