@@ -1,0 +1,76 @@
+{
+  "format": "nai-lens-adapter",
+  "version": 1,
+  "id": "aurora-images-v1",
+  "name": "Aurora 兼容生图",
+  "description": "依据公开OpenAPI；尚未进行真实生成核验。",
+  "allowedUrls": [
+    "https://love.auroralove.cc/api/v1/images/generations",
+    "https://love.auroralove.cc/v1/images/generations"
+  ],
+  "auth": {
+    "type": "bearer"
+  },
+  "request": {
+    "fields": [
+      {
+        "target": "model",
+        "source": "model",
+        "type": "string"
+      },
+      {
+        "target": "prompt",
+        "source": "fullPrompt",
+        "type": "string"
+      },
+      {
+        "target": "size",
+        "source": "size",
+        "type": "string"
+      },
+      {
+        "target": "n",
+        "value": 1
+      },
+      {
+        "target": "response_format",
+        "value": "b64_json"
+      },
+      {
+        "target": "negative_prompt",
+        "source": "negativePrompt",
+        "type": "string"
+      },
+      {
+        "target": "steps",
+        "source": "steps",
+        "type": "integer"
+      },
+      {
+        "target": "scale",
+        "source": "scale",
+        "type": "number"
+      },
+      {
+        "target": "sampler",
+        "source": "sampler",
+        "type": "string"
+      },
+      {
+        "target": "seed",
+        "source": "seed",
+        "type": "string"
+      },
+      {
+        "target": "noise_schedule",
+        "source": "noiseSchedule",
+        "type": "string"
+      }
+    ]
+  },
+  "response": {
+    "format": "json",
+    "imagePath": "data.0.b64_json",
+    "encoding": "base64"
+  }
+}

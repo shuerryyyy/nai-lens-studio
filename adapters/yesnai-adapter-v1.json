@@ -1,0 +1,88 @@
+{
+  "format": "nai-lens-adapter",
+  "version": 1,
+  "id": "yesnai-images-v1",
+  "name": "YesNAI 兼容生图",
+  "description": "依据公开文档；此文件仍需用你自己的返回原图核对。",
+  "allowedUrls": [
+    "https://ynai.rinko.ai/v1/images/generations",
+    "https://nai.rinko.ai/v1/images/generations"
+  ],
+  "auth": {
+    "type": "bearer"
+  },
+  "request": {
+    "fields": [
+      {
+        "target": "model",
+        "source": "model",
+        "type": "string"
+      },
+      {
+        "target": "prompt",
+        "source": "fullPrompt",
+        "type": "string"
+      },
+      {
+        "target": "size",
+        "source": "size",
+        "type": "string"
+      },
+      {
+        "target": "n",
+        "value": 1
+      },
+      {
+        "target": "response_format",
+        "value": "b64_json"
+      },
+      {
+        "target": "nai.negative_prompt",
+        "source": "negativePrompt",
+        "type": "string"
+      },
+      {
+        "target": "nai.steps",
+        "source": "steps",
+        "type": "integer"
+      },
+      {
+        "target": "nai.scale",
+        "source": "scale",
+        "type": "number"
+      },
+      {
+        "target": "nai.sampler",
+        "source": "sampler",
+        "type": "string"
+      },
+      {
+        "target": "nai.seed",
+        "source": "seed",
+        "type": "integer"
+      },
+      {
+        "target": "nai.noise_schedule",
+        "source": "noiseSchedule",
+        "type": "string"
+      },
+      {
+        "target": "nai.action",
+        "value": "generate"
+      },
+      {
+        "target": "nai.qualityToggle",
+        "value": false
+      },
+      {
+        "target": "nai.ucPreset",
+        "value": 4
+      }
+    ]
+  },
+  "response": {
+    "format": "json",
+    "imagePath": "data.0.b64_json",
+    "encoding": "base64"
+  }
+}

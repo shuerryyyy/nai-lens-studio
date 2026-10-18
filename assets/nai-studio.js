@@ -259,6 +259,7 @@ function saveSettings() {
     if (!element) return;
     data[id] = element.type === 'checkbox' ? element.checked : element.value;
   });
+  data.adapterId = NaiAdapters.selectedId();
   data.wordSources = collectedWordSources(data);
   trackedWordSources = data.wordSources;
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
@@ -282,6 +283,7 @@ function loadSettings() {
     if (element.type === 'checkbox') element.checked = Boolean(data[id]);
     else element.value = data[id];
   });
+  NaiAdapters.setSelected(data.adapterId || '');
   trackedWordSources = Array.isArray(data.wordSources) ? data.wordSources.filter(source => source && WORD_PROMPT_FIELDS.includes(source.field) && typeof source.content === 'string') : [];
   if (data.rememberToken) $('token').value = localStorage.getItem(TOKEN_KEY) || '';
   updateActiveCharacterLabel();
@@ -323,6 +325,7 @@ function applyApiPreset(preset) {
   $('endpoint').value = preset.endpoint || '';
   $('token').value = preset.token || '';
   $('presetSaveToken').checked = Boolean(preset.token);
+  NaiAdapters.setSelected(preset.adapterId || '');
   $('deleteApiPresetBtn').disabled = false;
   updateApiStatus();
   saveSettings();
@@ -344,16 +347,17 @@ $('saveApiPresetBtn').onclick = () => {
   const endpoint = $('endpoint').value.trim();
   if (!name) { toast('请先填写预设名称'); $('apiPresetName').focus(); return; }
   if (!endpoint) { toast('请先填写接口地址'); $('endpoint').focus(); return; }
+  try { NaiAdapters.requireFor(endpoint, $('apiMode').value); } catch (error) { toast(error.message); return; }
   const list = apiPresets();
   const selectedId = $('apiPresetSelect').value;
   const existingIndex = list.findIndex(item => item.id === selectedId);
   const preset = {
-    id: selectedId || makeId(), name, mode: $('apiMode').value, endpoint,
+    id: selectedId || makeId(), name, mode: $('apiMode').value, endpoint, adapterId: NaiAdapters.selectedId(),
     token: $('presetSaveToken').checked ? $('token').value.trim() : '', updatedAt: Date.now()
   };
   if (existingIndex >= 0) list.splice(existingIndex, 1, preset);
   else list.unshift(preset);
-  saveApiPresets(list);
+  try { saveApiPresets(list); } catch (error) { toast(`预设保存失败：${error.message}`); return; }
   $('apiPresetSelect').value = preset.id;
   $('deleteApiPresetBtn').disabled = false;
   updateApiStatus();
@@ -2018,8 +2022,23 @@ async function b64Blob(base64) {
   return new Blob([bytes], { type: mime });
 }
 
-async function parseImageResponse(response, mode) {
+async function parseImageResponse(response, mode, adapter = null) {
   if (!response.ok) throw new Error(explainHttpError(response.status));
+  if (adapter) {
+    if (adapter.response.format === 'json') {
+      const data = JSON.parse(new TextDecoder().decode(await readLimitedResponse(response, MAX_IMAGE_BYTES * 1.4)));
+      const value = NaiAdapters.imageValue(adapter,data);
+      if (adapter.response.encoding === 'base64' || /^data:image\/(?:png|jpeg|webp);base64,/i.test(value)) return validateGeneratedImage(await b64Blob(value));
+      return downloadGeneratedImage(value);
+    }
+    if (adapter.response.format === 'image') return validateGeneratedImage(new Blob([await readLimitedResponse(response)]));
+    if (typeof JSZip === 'undefined') throw new Error('ZIP解析组件未加载');
+    const zip = await JSZip.loadAsync(await readLimitedResponse(response));
+    const entry = Object.values(zip.files).find(item => !item.dir && /\.(?:png|jpe?g|webp)$/i.test(item.name));
+    if (!entry) throw new Error('ZIP中没有可读取的PNG、JPEG或WebP图片');
+    if (entry._data?.uncompressedSize > MAX_IMAGE_BYTES) throw new Error('图片超过64 MB限制');
+    return validateGeneratedImage(await entry.async('blob'));
+  }
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   if (contentType.includes('json')) {
     const data = JSON.parse(new TextDecoder().decode(await readLimitedResponse(response, MAX_IMAGE_BYTES * 1.4)));
@@ -2150,17 +2169,23 @@ $('generateBtn').onclick = async () => {
   document.querySelector('.result-sheet').classList.add('generating');
   setStatus('请求已发送', 'run', `${meta.model} · ${meta.size}`);
   try {
-    const mode = $('apiMode').value;
+    const mode = $('apiMode').value, endpoint = $('endpoint').value.trim();
+    const adapter = NaiAdapters.requireFor(endpoint,mode,meta);
+    let adaptedBody = null;
+    if (adapter) {
+      if (meta.seed === '' || meta.seed == null) meta.seed = String(randomSeed());
+      adaptedBody = NaiAdapters.build(adapter,meta);
+    }
     await prepareVibes(meta, controller.signal);
     if (controller.signal.aborted) throw new DOMException('已停止等待', 'AbortError');
-    const response = await fetch($('endpoint').value.trim(), {
+    const response = await fetch(endpoint, {
       method: 'POST',
       signal: controller.signal,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, image/png, application/zip' },
-      body: JSON.stringify(mode === 'official' || /\/ai\/generate-image\/?$/.test(new URL($('endpoint').value.trim()).pathname) ? naiRequest(meta) : proxyRequest(meta))
+      headers: adapter ? NaiAdapters.headers(adapter,token) : { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, image/png, application/zip' },
+      body: JSON.stringify(adapter ? adaptedBody : mode === 'official' || /\/ai\/generate-image\/?$/.test(new URL(endpoint).pathname) ? naiRequest(meta) : proxyRequest(meta,endpoint))
     });
     if (!response.ok) throw new Error(explainHttpError(response.status, await response.text(), mode));
-    const blob = await parseImageResponse(response, mode);
+    const blob = await parseImageResponse(response, mode, adapter);
     if (controller.signal.aborted) throw new DOMException('已停止等待', 'AbortError');
     generatedBlob = blob;
     meta.requestedSeed = meta.seed;
@@ -3215,6 +3240,7 @@ async function initVibes() {
 
 (async () => {
   applyTheme(document.documentElement.dataset.theme || 'studio');
+  NaiAdapters.init({ onChange: saveSettings, getPresets: apiPresets });
   renderApiPresets();
   loadSettings();
   updateWordForm();

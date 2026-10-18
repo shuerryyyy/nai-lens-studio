@@ -18,9 +18,15 @@
 
 ### 下载单文件版
 
-[下载 v2.18 单文件版](download/nai-lens-studio-v2.18-standalone.html)
+[下载 v2.19 单文件版](download/nai-lens-studio-v2.19-standalone.html)
 
 下载后直接用浏览器打开即可。单文件版已经内嵌主程序、ZIP 解析组件和标题字体，适合保存到电脑或发送到手机使用。
+
+## v2.19 可导入接口适配
+
+在“连接设置与 API 预设”中展开“接口适配文件”，可复制给 AI 的完整说明、下载格式规范和示例、导入/导出 JSON 并绑定 API 预设。请将服务商公开文档与说明一起交给 AI，缺少文档时不能靠猜测证明兼容。
+
+首版仅支持单次 POST JSON 文生图，暂不支持排队、流式、签名、Vibe 和自动重试。文件格式检查通过不代表服务商采用全部参数，需从返回原图核对；适配配置不在档案备份中，换设备请单独导出。原有连接可继续选择“自动识别 / 默认格式”。完整格式和示例见 [适配文件说明](adapters/README.md)。
 
 ## v2.18 接口修复说明
 
@@ -92,6 +98,8 @@ Vibe 目前用于 V3、V4.5 等兼容模型，V5 下暂停发送并保留选择�
 ```text
 index.html                         在线版入口
 assets/nai-studio.js               主程序
+assets/nai-adapters.js             声明式接口适配与设置
+adapters/                         适配规范与示例
 assets/nai-features.js             文件夹、取词排序与图片元数据兼容
 assets/flat-ui.css                 用户确认的无卡片视觉系统
 assets/flat-controls.js            SVG 工具与按需说明

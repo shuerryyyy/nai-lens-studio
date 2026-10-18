@@ -384,3 +384,21 @@ html[data-theme] .image-tag-editor {background:var(--input);border:0;border-radi
 #imageReturnedRecord {margin-top:16px}
 #imageReturnedRecord .returned-record-note {color:var(--muted);font-size:12px;margin:8px 0}
 #imageReturnedRecord [data-returned-negative] {white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* API adapter controls are scoped to connection settings. */
+#apiAdapterPanel {margin:18px 0;padding-top:16px;border-top:1px solid var(--line)}
+#apiAdapterPanel>summary {font-weight:600}
+#apiAdapterSummary {font-weight:400;color:var(--muted);font-size:12px;margin-left:8px;overflow-wrap:anywhere}
+#apiAdapterPanel .adapter-actions {display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}
+#apiAdapterPanel .adapter-actions select {width:auto;max-width:100%;min-width:150px}
+#apiAdapterPanel .adapter-status,#apiAdapterMessage,#apiAdapterPanel p {font-size:12px;line-height:1.8;overflow-wrap:anywhere}
+#apiAdapterPanel .adapter-status {color:var(--muted)}
+#apiAdapterPanel .adapter-error {color:var(--danger)}
+#apiAdapterMessage:not(:empty) {padding:8px 0}
+#apiAdapterPanel .adapter-preview,#apiAdapterPanel .adapter-help {border-top:1px solid var(--line);padding-top:12px;margin-top:14px}
+#apiAdapterPreview>p {white-space:pre-wrap}
+#apiAdapterPreview table {width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;margin:12px 0}
+#apiAdapterPreview caption {text-align:left;color:var(--muted);padding-bottom:8px}
+#apiAdapterPreview th,#apiAdapterPreview td {text-align:left;border-bottom:1px solid var(--line);padding:8px 4px;vertical-align:top;overflow-wrap:anywhere}
+#adapterInstructionsText {width:100%;font-family:inherit}
+@media(max-width:760px), (max-width:1100px) and (pointer:coarse) {#apiAdapterPanel button{min-height:44px} #apiAdapterPanel .adapter-actions select{width:100%}}
