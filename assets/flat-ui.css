@@ -380,3 +380,7 @@ html[data-theme] .image-tag-editor {background:var(--input);border:0;border-radi
 #view-characters .word-layout > *, #view-characters .character-card {min-width:0}
 #view-characters .character-list {grid-template-columns:minmax(0,1fr)}
 #view-characters .character-head > div {min-width:0;overflow-wrap:anywhere}
+
+#imageReturnedRecord {margin-top:16px}
+#imageReturnedRecord .returned-record-note {color:var(--muted);font-size:12px;margin:8px 0}
+#imageReturnedRecord [data-returned-negative] {white-space:pre-wrap;overflow-wrap:anywhere}

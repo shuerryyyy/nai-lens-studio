@@ -1391,6 +1391,59 @@ function renderImageLibrary() {
   restoreLibraryResultsHome();
 }
 
+// Read returned values from the original image. Never replace the archived request.
+const returnedImageMetadataCache = new WeakMap();
+let returnedImageDetailsToken = null;
+function reportedImageValues(metadata) {
+  const raw = flattenImageMetadata(metadata.text || {}), result = {};
+  const negative = [raw.v4_negative_prompt?.caption?.base_caption, raw.uc, raw.negative_prompt, raw.negativePrompt, raw.Negative, metadata.text?.Negative].find(value => typeof value === 'string');
+  if (negative !== undefined) result.negativePrompt = negative;
+  for (const key of ['steps', 'scale', 'seed']) {
+    const value = raw[key] ?? (key === 'scale' ? raw.cfg_scale : undefined);
+    if (value !== undefined && value !== null && value !== '' && Number.isFinite(Number(value))) result[key] = Number(value);
+  }
+  if (typeof raw.sampler === 'string' && raw.sampler) result.sampler = raw.sampler;
+  const noise = raw.noise_schedule ?? raw.noiseSchedule;
+  if (typeof noise === 'string' && noise) result.noiseSchedule = noise;
+  return result;
+}
+function returnedImageValues(blob) {
+  if (!returnedImageMetadataCache.has(blob)) returnedImageMetadataCache.set(blob, (async () => {
+    // Ordinary PNG text can be read without decoding all the pixels.
+    try {
+      const values = reportedImageValues(await parsePNG(blob));
+      if ('negativePrompt' in values) return values;
+    } catch { /* JPEG/WebP and PNG stealth metadata use the shared reader. */ }
+    return reportedImageValues(await readImageMetadata(blob));
+  })());
+  return returnedImageMetadataCache.get(blob);
+}
+async function showReturnedImageValues(item) {
+  const host = $('imageReturnedRecord'), token = Symbol();
+  returnedImageDetailsToken = token;
+  host.innerHTML = '<header><b>图片记录的负面词与参数</b></header><p role="status">正在读取原图记录……</p>';
+  try {
+    const values = await returnedImageValues(item.blob);
+    if (returnedImageDetailsToken !== token || currentImage !== item || !$('imageDialog').open) return;
+    const hasNegative = Object.hasOwn(values, 'negativePrompt');
+    const comparable = value => String(value || '').trim().replace(/\s+/g, ' ');
+    const same = hasNegative && comparable(values.negativePrompt) === comparable(item.negativePrompt);
+    const note = !hasNegative ? '原图没有可读取的负面词记录，无法核实。' : same ? '原图记录与档案保存的负面词一致。' : '原图记录与档案保存的负面词不同；原填写内容已保留。';
+    const params = [
+      'steps' in values ? values.steps + ' Steps' : '', 'scale' in values ? 'Guidance ' + values.scale : '',
+      values.sampler ? samplerName(values.sampler) : '', values.noiseSchedule || '',
+      'seed' in values ? 'Seed ' + values.seed : ''
+    ].filter(Boolean);
+    host.innerHTML = '<header><b>图片记录的负面词</b><button class="copy-btn" type="button" data-returned-negative-copy aria-label="复制图片记录的负面词" ' + (hasNegative && values.negativePrompt ? '' : 'disabled') + '>' + icon('copy') + '</button></header>'
+      + '<p class="returned-record-note" role="status">' + note + '</p>'
+      + (hasNegative ? '<p data-returned-negative>' + escapeHTML(values.negativePrompt || '（空）') + '</p>' : '')
+      + (params.length ? '<div class="image-parameter-strip" aria-label="图片记录的参数">' + params.map(value => '<span class="chip">' + escapeHTML(value) + '</span>').join('') + '</div>' : '<p class="returned-record-note">原图没有可读取的生成参数。</p>');
+    host.querySelector('[data-returned-negative-copy]').onclick = event => copyText(values.negativePrompt || '', event.currentTarget);
+  } catch {
+    if (returnedImageDetailsToken === token && currentImage === item && $('imageDialog').open) host.innerHTML = '<header><b>图片记录的负面词与参数</b></header><p role="status">无法读取原图中的生成记录；档案内容保留原样。</p>';
+  }
+}
+
 function openImageDialog(item) {
   if (!item) return;
   currentImage = item;
@@ -1410,7 +1463,7 @@ function openImageDialog(item) {
     ['画面描述', item.scenePrompt || item.sourcePrompt], ['人物提示词', item.characterPrompt],
     ['画师串', item.artistPrompt], ['正面提示词', item.positivePrompt], ['负面提示词', item.negativePrompt]
   ];
-  $('imagePromptDetails').innerHTML = promptRows.map(([label, value], index) => `<section class="image-prompt-row"><header><b>${label}</b><button type="button" class="copy-btn" data-image-prompt-copy="${index}" aria-label="复制${label}" ${value ? '' : 'disabled'}>${icon('copy')}</button></header><p>${escapeHTML(value || '—')}</p></section>`).join('');
+  $('imagePromptDetails').innerHTML = promptRows.map(([label, value], index) => `<section class="image-prompt-row"><header><b>${label}${index === 4 ? (item.imported === false ? '（当时填写）' : '（档案保存）') : ''}</b><button type="button" class="copy-btn" data-image-prompt-copy="${index}" aria-label="复制${label}" ${value ? '' : 'disabled'}>${icon('copy')}</button></header><p>${escapeHTML(value || '—')}</p></section>`).join('');
   $('imagePromptDetails').querySelectorAll('[data-image-prompt-copy]').forEach(button => button.onclick = () => copyText(promptRows[Number(button.dataset.imagePromptCopy)][1] || '', button));
   const copyAll = $('imageCopyAll');
   copyAll.onclick = () => copyText(promptRows.filter(([, value]) => value).map(([label, value]) => `${label}\n${value}`).join('\n\n'), copyAll);
@@ -1439,6 +1492,7 @@ function openImageDialog(item) {
   $('imageDownloadJpeg').onclick = () => downloadArtworkJpeg(item, $('imageDownloadJpeg'));
   $('imageDelete').onclick = () => deleteArtwork(item).catch(error => toast(error.message));
   showDialog('imageDialog');
+  void showReturnedImageValues(item);
 }
 
 async function moveArtworkRecords(items, targetRecipeId) {
@@ -1909,12 +1963,46 @@ function naiRequest(meta) {
   };
 }
 
-function proxyRequest(meta) {
+function isYesNaiImagesEndpoint(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === 'https:' && ['ynai.rinko.ai', 'nai.rinko.ai'].includes(url.hostname)
+      && /^\/v1\/images\/generations\/?$/.test(url.pathname);
+  } catch { return false; }
+}
+
+function isAuroraImagesEndpoint(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === 'https:' && url.hostname === 'love.auroralove.cc'
+      && /^\/(?:api\/)?(?:v1\/)?images\/generations\/?$/.test(url.pathname);
+  } catch { return false; }
+}
+
+function proxyRequest(meta, endpoint = $('endpoint').value.trim()) {
   if (meta.seed === '' || meta.seed == null) meta.seed = String(randomSeed());
+  if (isYesNaiImagesEndpoint(endpoint)) {
+    // YesNAI /docs: NAI settings belong inside nai, not the OpenAI top level.
+    const parameters = {
+      ...(meta.transparentBg ? { transparent_background: true } : {}),
+      ...vibeRequestFields(meta)
+    };
+    return {
+      model: meta.model, prompt: meta.fullPrompt, size: meta.size, n: 1,
+      response_format: 'b64_json',
+      nai: {
+        action: 'generate', steps: meta.steps, scale: meta.scale,
+        sampler: meta.sampler, seed: Number(meta.seed),
+        negative_prompt: meta.negativePrompt, noise_schedule: meta.noiseSchedule,
+        qualityToggle: false, ucPreset: 4,
+        ...(Object.keys(parameters).length ? { parameters } : {})
+      }
+    };
+  }
   return {
     model: meta.model, prompt: meta.fullPrompt, negative_prompt: meta.negativePrompt,
     size: meta.size, n: 1, steps: meta.steps, scale: meta.scale,
-    sampler: meta.sampler, seed: Number(meta.seed), noise_schedule: meta.noiseSchedule,
+    sampler: meta.sampler, seed: isAuroraImagesEndpoint(endpoint) ? String(meta.seed) : Number(meta.seed), noise_schedule: meta.noiseSchedule,
     ...(meta.transparentBg ? { transparent_background: true } : {}),
     ...vibeRequestFields(meta)
   };
