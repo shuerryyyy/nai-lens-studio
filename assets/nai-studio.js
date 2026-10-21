@@ -45,13 +45,13 @@ let importPreviewUrl = '';
 let generationController = null;
 let restoreInProgress = false;
 const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
-const WORD_KINDS = ['scene', 'artist', 'positive', 'negative', 'bundle'];
+const WORD_KINDS = ['scene', 'clothing', 'artist', 'positive', 'negative', 'bundle'];
 
 function normalizeLibraryRecord(record, type, strict = false) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('备份中存在无效记录');
   const result = { ...record };
   result.id = String(record.id ?? makeId());
-  for (const key of ['folderId', 'name', 'content', 'fullPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'scenePrompt', 'characterPrompt', 'sourcePrompt', 'title', 'category', 'note', 'author', 'sourceUrl', 'transferId', 'recipeId', 'characterId', 'model', 'size', 'sampler', 'noiseSchedule', 'gender', 'hair', 'eyes', 'skin', 'body', 'features', 'outfit', 'naturalAppearance']) {
+  for (const key of ['folderId', 'name', 'content', 'fullPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'scenePrompt', 'clothingPrompt', 'characterPrompt', 'sourcePrompt', 'title', 'category', 'note', 'author', 'sourceUrl', 'transferId', 'recipeId', 'characterId', 'model', 'size', 'sampler', 'noiseSchedule', 'gender', 'hair', 'eyes', 'skin', 'body', 'features', 'outfit', 'naturalAppearance']) {
     if (key in result && typeof result[key] !== 'string') result[key] = String(result[key] ?? '');
   }
   result.tags = Array.isArray(record.tags) ? record.tags.filter(tag => typeof tag === 'string') : splitTags(record.tags);
@@ -72,7 +72,7 @@ function readLocalLibrary(key, type) {
 }
 
 const fields = [
-  'scenePrompt', 'characterPrompt', 'characterSelectIds', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model',
+  'scenePrompt', 'clothingPrompt', 'characterPrompt', 'characterSelectIds', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model',
   'size', 'recipeSelect', 'tags', 'steps', 'scale', 'seed', 'sampler',
   'noiseSchedule', 'transparentBg', 'apiMode', 'endpoint', 'rememberToken', 'gallerySort', 'librarySort'
 ];
@@ -83,6 +83,17 @@ function toast(message) {
   element.classList.add('show');
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => element.classList.remove('show'), 2400);
+}
+
+function recordTimeText(record, label = '保存时间') {
+  const timestamp = Number(record.createdAt);
+  const date = new Date(timestamp);
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || Number.isNaN(date.getTime())) return `${label}：未记录`;
+  const pad = value => String(value).padStart(2, '0');
+  return `${label}：${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+function recordTimeButton(record) {
+  return `<button type="button" class="flat-help flat-tool secondary" aria-label="查看说明" data-flat-tooltip="${escapeHTML(recordTimeText(record))}">${icon('info')}</button>`;
 }
 
 function splitTags(value) {
@@ -244,7 +255,7 @@ document.querySelectorAll('.copy-btn[data-copy]').forEach(button => {
 });
 
 function fullPrompt() {
-  return [$('positivePrompt').value.trim(), $('characterPrompt').value.trim(), $('scenePrompt').value.trim(), $('artistPrompt').value.trim()]
+  return [$('positivePrompt').value.trim(), $('characterPrompt').value.trim(), $('clothingPrompt').value.trim(), $('scenePrompt').value.trim(), $('artistPrompt').value.trim()]
     .filter(Boolean).join(', ');
 }
 
@@ -889,7 +900,7 @@ function coverFor(recipe) {
     || null;
 }
 
-const WORD_PROMPT_FIELDS = ['scenePrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt'];
+const WORD_PROMPT_FIELDS = ['clothingPrompt', 'scenePrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt'];
 let trackedWordSources = [];
 let wordSourceIndexRaw = null, wordSourceIndex = [];
 function normalizedWordPrompt(value) {
@@ -955,7 +966,7 @@ function artworkSearchText(item) {
   const recipe = recipesCache.find(value => value.id === item.recipeId);
   return [
     item.title, item.scenePrompt, item.characterPrompt, item.sourcePrompt, item.fullPrompt, item.artistPrompt,
-    item.positivePrompt, item.negativePrompt, item.category, ...(item.tags || []),
+    item.positivePrompt, item.clothingPrompt, item.negativePrompt, item.category, ...(item.tags || []),
     item.sourceUrl, artworkWordSearchText(item), recipe?.name, recipe?.author, recipe?.sourceUrl, ...(recipe?.tags || [])
   ].join(' ').toLowerCase();
 }
@@ -1249,7 +1260,7 @@ function inspectRecipe(recipe) {
     ? '<div class="tools"><button class="secondary" id="clearGallerySearch" type="button">清空搜索</button></div>'
     : recipe.virtual
     ? '<div class="tools"><button class="secondary" id="organizeFirst" type="button">新建配方整理</button></div>'
-    : `<div class="tools"><button class="secondary" id="useRecipe" type="button">去创作台</button><button class="secondary" id="moveRecipeFront" type="button">移到最前</button><button class="icon-btn${recipe.favorite ? ' favorite-active' : ''}" id="favoriteRecipe" type="button" aria-label="${recipe.favorite ? '取消收藏' : '收藏'}配方" aria-pressed="${Boolean(recipe.favorite)}">${icon('star')}</button><button class="icon-btn" id="editRecipe" type="button" aria-label="编辑配方">${icon('settings')}</button></div>`;
+    : `<div class="tools">${recordTimeButton(recipe)}<button class="secondary" id="useRecipe" type="button">去创作台</button><button class="secondary" id="moveRecipeFront" type="button">移到最前</button><button class="icon-btn${recipe.favorite ? ' favorite-active' : ''}" id="favoriteRecipe" type="button" aria-label="${recipe.favorite ? '取消收藏' : '收藏'}配方" aria-pressed="${Boolean(recipe.favorite)}">${icon('star')}</button><button class="icon-btn" id="editRecipe" type="button" aria-label="编辑配方">${icon('settings')}</button></div>`;
   const reusable = recipe.virtualKind === 'search'
     ? '<p class="security-note">集中展示命中图片标签、标题、画面提示词或所属配方的结果。打开图片可以继续补标签。</p>'
     : recipe.virtual ? '<p class="security-note">这里收纳尚未归入配方的图片。打开任一图片即可移动、复制或删除。</p>'
@@ -1453,7 +1464,7 @@ function openImageDialog(item) {
   currentImage = item;
   const recipe = recipesCache.find(value => value.id === item.recipeId);
   $('imageDialogTitle').textContent = item.title || '图片记录';
-  $('imageDialogMeta').textContent = `${recipe?.name || '未关联配方'} · ${shortModel(item.model || '未知模型')} · ${item.size || '未知尺寸'}`;
+  $('imageDialogMeta').textContent = `${recipe?.name || '未关联配方'} · ${shortModel(item.model || '未知模型')} · ${item.size || '未知尺寸'} · ${recordTimeText(item, item.imported ? '导入时间' : '生成时间')}`;
   if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
   imagePreviewUrl = URL.createObjectURL(item.blob);
   $('imageDialogPreview').src = imagePreviewUrl;
@@ -1465,7 +1476,8 @@ function openImageDialog(item) {
   ].filter(Boolean).map(value => `<span class="chip">${escapeHTML(value)}</span>`).join('');
   const promptRows = [
     ['画面描述', item.scenePrompt || item.sourcePrompt], ['人物提示词', item.characterPrompt],
-    ['画师串', item.artistPrompt], ['正面提示词', item.positivePrompt], ['负面提示词', item.negativePrompt]
+    ['画师串', item.artistPrompt], ['正面提示词', item.positivePrompt], ['负面提示词', item.negativePrompt],
+    ['服装', item.clothingPrompt]
   ];
   $('imagePromptDetails').innerHTML = promptRows.map(([label, value], index) => `<section class="image-prompt-row"><header><b>${label}${index === 4 ? (item.imported === false ? '（当时填写）' : '（档案保存）') : ''}</b><button type="button" class="copy-btn" data-image-prompt-copy="${index}" aria-label="复制${label}" ${value ? '' : 'disabled'}>${icon('copy')}</button></header><p>${escapeHTML(value || '—')}</p></section>`).join('');
   $('imagePromptDetails').querySelectorAll('[data-image-prompt-copy]').forEach(button => button.onclick = () => copyText(promptRows[Number(button.dataset.imagePromptCopy)][1] || '', button));
@@ -1626,9 +1638,10 @@ async function downloadArtworkJpeg(item, button) {
 }
 
 function reuseArtwork(item) {
+  $('clothingPrompt').value = item.clothingPrompt || '';
   trackedWordSources = structuredClone(Array.isArray(item.wordSources) ? item.wordSources : inferredWordSources(item));
   restoreVibeSelection(item.vibes || [], item.model);
-  ['scenePrompt', 'characterPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model', 'size', 'steps', 'scale', 'seed', 'sampler', 'noiseSchedule'].forEach(key => {
+  ['scenePrompt', 'clothingPrompt', 'characterPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model', 'size', 'steps', 'scale', 'seed', 'sampler', 'noiseSchedule'].forEach(key => {
     if (item[key] !== undefined && $(key)) $(key).value = item[key];
   });
   $('tags').value = (item.tags || []).join(', ');
@@ -1706,7 +1719,7 @@ function openPicker(kind, targetId = `${kind}Prompt`) {
   $('pickerSort').value = localStorage.getItem(`nai_picker_sort_${kind}`) || 'favorite';
   pickerTargetId = targetId;
   $('pickerSearch').value = '';
-  const fieldName = { scene: '画面描述词', character: '人物提示词', artist: '画师串', positive: '正面词', negative: '负面词' }[kind];
+  const fieldName = { scene: '画面描述词', clothing: '服装', character: '人物提示词', artist: '画师串', positive: '正面词', negative: '负面词' }[kind];
   $('pickerTitle').textContent = `选择${fieldName}`;
   $('pickerHelp').textContent = kind === 'character' ? '可以同时勾选多个人物；切换搜索词不会丢失勾选。' : '收藏内容优先显示；“替换”会清空当前字段，“追加”会接在后面。';
   $('pickerMultiActions').hidden = kind !== 'character';
@@ -1743,7 +1756,7 @@ document.querySelectorAll('[data-pick]').forEach(button => button.onclick = () =
 document.querySelectorAll('[data-recipe-pick]').forEach(button => button.onclick = () => openPicker(button.dataset.recipePick, `recipe${button.dataset.recipePick[0].toUpperCase()}${button.dataset.recipePick.slice(1)}`));
 
 function kindName(kind) {
-  return ({ scene: '画面描述词', artist: '画师串', positive: '正面词', negative: '负面词', bundle: '整套配方' })[kind] || '散词';
+  return ({ scene: '画面描述词', clothing: '服装', artist: '画师串', positive: '正面词', negative: '负面词', bundle: '整套配方' })[kind] || '散词';
 }
 
 function renderWords() {
@@ -1769,7 +1782,7 @@ function renderWords() {
     const provenance = word.author || word.note || word.sourceUrl
       ? `<div class="word-provenance">${word.author ? `<span title="${escapeHTML(word.author)}">作者：${escapeHTML(word.author)}</span>` : ''}${word.note ? `<span title="${escapeHTML(word.note)}">备注：${escapeHTML(word.note)}</span>` : ''}${safeSource ? `<a class="source-link" href="${escapeHTML(safeSource)}" target="_blank" rel="noopener noreferrer">打开来源</a>` : word.sourceUrl ? `<span>来源：${escapeHTML(word.sourceUrl)}</span>` : ''}</div>`
       : '';
-    return `<article class="word-row${authorSelections.words.active ? ' word-selection-mode' : ''}${authorSelections.words.active && authorSelections.words.ids.has(String(word.id)) ? ' selected' : ''}${expandedWordId === String(word.id) ? ' expanded' : ''}">${authorSelections.words.active ? `<label class="word-bulk-select"><input type="checkbox" data-word-select="${escapeHTML(word.id)}" aria-label="选择${escapeHTML(word.name)}" ${authorSelections.words.ids.has(String(word.id)) ? 'checked' : ''}></label>` : ''}<button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" ${authorSelections.words.active ? `aria-pressed="${authorSelections.words.ids.has(String(word.id))}"` : `aria-expanded="${expandedWordId === String(word.id)}"`}><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${authorSelections.words.active ? (authorSelections.words.ids.has(String(word.id)) ? '已选择' : '未选择') : expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${escapeHTML(word.id)}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${escapeHTML(word.id)}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
+    return `<article class="word-row${authorSelections.words.active ? ' word-selection-mode' : ''}${authorSelections.words.active && authorSelections.words.ids.has(String(word.id)) ? ' selected' : ''}${expandedWordId === String(word.id) ? ' expanded' : ''}">${authorSelections.words.active ? `<label class="word-bulk-select"><input type="checkbox" data-word-select="${escapeHTML(word.id)}" aria-label="选择${escapeHTML(word.name)}" ${authorSelections.words.ids.has(String(word.id)) ? 'checked' : ''}></label>` : ''}<button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" ${authorSelections.words.active ? `aria-pressed="${authorSelections.words.ids.has(String(word.id))}"` : `aria-expanded="${expandedWordId === String(word.id)}"`}><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${authorSelections.words.active ? (authorSelections.words.ids.has(String(word.id)) ? '已选择' : '未选择') : expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${recordTimeButton(word)}${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${escapeHTML(word.id)}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${escapeHTML(word.id)}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
   }).join('') : '<div class="empty"><div><b>散词库还是空的</b><span>保存单独词条，或用结构化表单保存整套配方。</span></div></div>';
   if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('words', list, $('wordList'), '.word-row');
   document.querySelectorAll('[data-word-copy]').forEach(button => button.onclick = () => {
@@ -1924,7 +1937,7 @@ function collectMeta() {
   return {
     wordSources: collectedWordSources(Object.fromEntries(WORD_PROMPT_FIELDS.map(field => [field, $(field).value]))),
     title: $('scenePrompt').value.trim().slice(0, 42) || recipe?.name || '未命名镜头',
-    scenePrompt: $('scenePrompt').value.trim(), characterPrompt: currentCharacterPrompt,
+    scenePrompt: $('scenePrompt').value.trim(), clothingPrompt: $('clothingPrompt').value.trim(), characterPrompt: currentCharacterPrompt,
     characterIds: linkedCharacters.map(character => character.id), characterNames: linkedCharacters.map(character => character.name),
     characterId: linkedCharacters[0]?.id || '', characterName: linkedCharacters[0]?.name || '', artistPrompt: $('artistPrompt').value.trim(),
     positivePrompt: $('positivePrompt').value.trim(), negativePrompt: $('negativePrompt').value.trim(),
@@ -2198,7 +2211,7 @@ $('generateBtn').onclick = async () => {
     }
     if (latestUrl) URL.revokeObjectURL(latestUrl);
     latestUrl = URL.createObjectURL(blob);
-    latestArtwork = { ...meta, blob };
+    latestArtwork = { ...meta, blob, createdAt: Date.now(), imported: false };
     $('resultImage').src = latestUrl;
     $('resultImage').hidden = false;
     $('emptyStage').hidden = true;
@@ -2206,7 +2219,7 @@ $('generateBtn').onclick = async () => {
     $('downloadLatest').download = `NAI_${Date.now()}_${safeFilenamePart(meta.model)}.${blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png'}`;
     $('downloadLatest').hidden = false;
     $('downloadLatestJpeg').hidden = false;
-    const id = await dbAdd('artworks', { ...meta, blob, createdAt: Date.now(), imported: false });
+    const id = await dbAdd('artworks', latestArtwork);
     savedArtworkId = id;
     latestArtwork.id = id;
     if (meta.recipeId) {
@@ -2653,7 +2666,30 @@ $('backupForm').onsubmit = async event => {
 };
 
 $('importBtn').onclick = () => $('importFile').click();
+function mergeCharacterRevision(existing, incoming) {
+  // Stable backup identity distinguishes an edited character from a lookalike.
+  if (!existing.transferId || existing.transferId !== incoming.transferId) return null;
+  const revision = item => {
+    const value = Number(item.updatedAt);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
+  const incomingRevision = revision(incoming), existingRevision = revision(existing);
+  if (!incomingRevision || incomingRevision <= existingRevision) return { record: { ...existing }, changed: false };
+  const record = { ...existing };
+  const editable = ['name', 'fullPrompt', ...Object.keys(characterFieldLabels), 'tags', 'favorite', 'note', 'sourceUrl', 'author'];
+  for (const key of editable) {
+    // An explicit empty value is an edit; a field absent in old formats is not.
+    if (Object.prototype.hasOwnProperty.call(incoming, key)) record[key] = incoming[key];
+  }
+  record.updatedAt = incomingRevision;
+  return { record, changed: JSON.stringify(record) !== JSON.stringify(existing) };
+}
+
 function mergeRecord(existing, incoming, type = '') {
+  if (type === 'character') {
+    const revision = mergeCharacterRevision(existing, incoming);
+    if (revision) return revision;
+  }
   const merged = { ...existing };
   const before = JSON.stringify(merged);
   merged.tags = [...new Set([...(existing.tags || []), ...(incoming.tags || [])])];
@@ -2670,7 +2706,7 @@ function mergeRecord(existing, incoming, type = '') {
     merged.characterId = merged.characterIds[0] || '';
   }
   const changed = before !== JSON.stringify(merged);
-  if (changed) merged.updatedAt = Math.max(existing.updatedAt || 0, incoming.updatedAt || 0, Date.now());
+  if (changed) merged.updatedAt = Math.max(existing.updatedAt || 0, incoming.updatedAt || 0, type === 'character' ? 0 : Date.now());
   return { record: merged, changed };
 }
 
@@ -2693,7 +2729,12 @@ function prepareRecordPlan(incoming, existing, keyFn, type) {
       if (oldKey) idMap.set(oldKey, matched.id);
       const merged = mergeRecord(matched, source, type);
       if (merged.changed) {
+        const previousContentKey = keyFn(matched);
         Object.assign(matched, merged.record);
+        if (previousContentKey && byContent.get(previousContentKey) === matched) byContent.delete(previousContentKey);
+        const nextContentKey = keyFn(matched);
+        if (nextContentKey) byContent.set(nextContentKey, matched);
+        if (matched.transferId) byTransferId.set(matched.transferId, matched);
         if (!pendingIds.has(String(matched.id)) && !merges.includes(matched)) merges.push(matched);
       } else skipped += 1;
       return;
@@ -2915,11 +2956,11 @@ async function restoreBackupData(data, suppliedPlan = null) {
 function showRestorePreview(data, plan) {
   pendingBackupImport = { data: plan.data || data, plan };
   $('restorePreviewStats').innerHTML = [
-    ['新增', plan.stats.added], ['补全', plan.stats.merged], ['跳过重复', plan.stats.skipped]
+    ['新增', plan.stats.added], ['更新/补全', plan.stats.merged], ['跳过重复', plan.stats.skipped]
   ].map(([label, count]) => `<div class="restore-stat"><b>${count}</b><span>${label}</span></div>`).join('');
-  $('restorePreviewDetail').textContent = `新增：${plan.stats.artworkCount} 张图片、${plan.stats.recipeCount} 份配方、${plan.stats.characterCount} 个人物、${plan.stats.wordCount} 个词条。补全：图片 ${plan.stats.artworkMerged}、配方 ${plan.stats.recipeMerged}、人物 ${plan.stats.characterMerged}、散词 ${plan.stats.wordMerged}。跳过重复：图片 ${plan.stats.artworkSkipped}、配方 ${plan.stats.recipeSkipped}、人物 ${plan.stats.characterSkipped}、散词 ${plan.stats.wordSkipped}${plan.stats.conflicts ? `。另有 ${plan.stats.conflicts} 个编号冲突会保留为新记录` : ''}`;
+  $('restorePreviewDetail').textContent = `新增：${plan.stats.artworkCount} 张图片、${plan.stats.recipeCount} 份配方、${plan.stats.characterCount} 个人物、${plan.stats.wordCount} 个词条。更新/补全：图片 ${plan.stats.artworkMerged}、配方 ${plan.stats.recipeMerged}、人物 ${plan.stats.characterMerged}、散词 ${plan.stats.wordMerged}。跳过重复：图片 ${plan.stats.artworkSkipped}、配方 ${plan.stats.recipeSkipped}、人物 ${plan.stats.characterSkipped}、散词 ${plan.stats.wordSkipped}${plan.stats.conflicts ? `。另有 ${plan.stats.conflicts} 个编号冲突会保留为新记录` : ''}`;
   showDialog('restorePreviewDialog');
-  $('restorePreviewDetail').textContent += `。Vibe 素材/组合：${plan.stats.vibeCount || 0} 项`;
+  $('restorePreviewDetail').textContent += `。Vibe 素材/组合：${plan.stats.vibeCount || 0} 项。同一人物采用修改时间较新的版本；时间相同或缺失时保留本地内容`;
 }
 
 $('cancelRestorePreview').onclick = () => { pendingBackupImport = null; closeDialog('restorePreviewDialog'); };
@@ -2930,7 +2971,7 @@ $('confirmRestorePreview').onclick = async () => {
   try {
     const restored = await restoreBackupData(pendingBackupImport.data, pendingBackupImport.plan);
     closeDialog('restorePreviewDialog');
-    toast(`已合并 ${restored.artworkCount} 张图片、${restored.recipeCount} 份配方；补全 ${restored.mergedCount} 项，跳过 ${restored.skippedCount} 项重复`);
+    toast(`已合并 ${restored.artworkCount} 张图片、${restored.recipeCount} 份配方；更新/补全 ${restored.mergedCount} 项，跳过 ${restored.skippedCount} 项重复`);
     pendingBackupImport = null;
   } catch (error) {
     toast(`恢复失败：${error.message}`);
