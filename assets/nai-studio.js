@@ -32,6 +32,7 @@ let latestArtwork = null;
 let galleryUrls = [];
 let libraryUrls = [];
 let pickerKind = '';
+let originalSeed = '';
 let pickerTargetId = '';
 let pickerItems = [];
 let pickerCharacterSelection = new Set();
@@ -259,6 +260,21 @@ function fullPrompt() {
     .filter(Boolean).join(', ');
 }
 
+function seedReference(value) {
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  return /^\d+$/.test(text) && Number(text) <= 4294967295 ? String(Number(text)) : '';
+}
+function renderOriginalSeed() {
+  $('originalSeedHint').textContent = `原始种子：${originalSeed || '未记录'}`;
+}
+function resetSeedForSource(source = {}, keepPrevious = true) {
+  const reference = seedReference(source.seed) || seedReference(source.defaultParams?.seed) || seedReference(source.requestedSeed);
+  originalSeed = reference || (keepPrevious ? seedReference($('seed').value) || originalSeed : '');
+  $('seed').value = '';
+  renderOriginalSeed();
+}
+
 function updateAdvancedSummary() {
   $('advancedSummary').textContent = `${$('steps').value || 28} Steps · Guidance ${$('scale').value || 7} · ${samplerName($('sampler').value)} · ${$('noiseSchedule').value || 'karras'}`;
 }
@@ -270,6 +286,7 @@ function saveSettings() {
     if (!element) return;
     data[id] = element.type === 'checkbox' ? element.checked : element.value;
   });
+  data.originalSeed = originalSeed;
   data.adapterId = NaiAdapters.selectedId();
   data.wordSources = collectedWordSources(data);
   trackedWordSources = data.wordSources;
@@ -294,6 +311,16 @@ function loadSettings() {
     if (element.type === 'checkbox') element.checked = Boolean(data[id]);
     else element.value = data[id];
   });
+  originalSeed = seedReference(data.originalSeed);
+  // Retire seeds remembered by older builds; only later manual input stays fixed.
+  if (!Object.prototype.hasOwnProperty.call(data, 'originalSeed')) {
+    originalSeed = seedReference(data.seed);
+    $('seed').value = '';
+    data.seed = '';
+    data.originalSeed = originalSeed;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
+  }
+  renderOriginalSeed();
   NaiAdapters.setSelected(data.adapterId || '');
   trackedWordSources = Array.isArray(data.wordSources) ? data.wordSources.filter(source => source && WORD_PROMPT_FIELDS.includes(source.field) && typeof source.content === 'string') : [];
   if (data.rememberToken) $('token').value = localStorage.getItem(TOKEN_KEY) || '';
@@ -588,6 +615,7 @@ function useCharacter(id) {
   recordLibraryUse('characters', character.id);
   $('characterPrompt').value = characterPrompt(character);
   setSelectedCharacterIds([character.id]);
+  resetSeedForSource(character);
   saveSettings();
   switchView('create');
   toast(`已把“${character.name}”放入创作台`);
@@ -793,6 +821,7 @@ function applyRecipe(recipe, includeParams = true) {
   $('positivePrompt').value = recipe.positivePrompt || '';
   $('negativePrompt').value = recipe.negativePrompt || '';
   setRecipeAssociation(recipe);
+  resetSeedForSource(recipe);
   if (includeParams) {
     if (Array.isArray(recipe.defaultParams?.vibes)) restoreVibeSelection(recipe.defaultParams.vibes, recipe.defaultParams.model);
     Object.entries(pickParams(recipe.defaultParams || {})).forEach(([key, value]) => {
@@ -1638,10 +1667,11 @@ async function downloadArtworkJpeg(item, button) {
 }
 
 function reuseArtwork(item) {
+  resetSeedForSource(item, false);
   $('clothingPrompt').value = item.clothingPrompt || '';
   trackedWordSources = structuredClone(Array.isArray(item.wordSources) ? item.wordSources : inferredWordSources(item));
   restoreVibeSelection(item.vibes || [], item.model);
-  ['scenePrompt', 'clothingPrompt', 'characterPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model', 'size', 'steps', 'scale', 'seed', 'sampler', 'noiseSchedule'].forEach(key => {
+  ['scenePrompt', 'clothingPrompt', 'characterPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model', 'size', 'steps', 'scale', 'sampler', 'noiseSchedule'].forEach(key => {
     if (item[key] !== undefined && $(key)) $(key).value = item[key];
   });
   $('tags').value = (item.tags || []).join(', ');
@@ -1685,6 +1715,12 @@ function renderPickerList() {
     trackWordSource(item.libraryType === 'words' ? words().find(word => String(word.id) === String(item.recordId)) : null, pickerTargetId, item.value, button.dataset.pickerMode === 'append');
     if (pickerTargetId === 'artistPrompt') syncArtistRecipe(item.libraryType === 'recipes' ? item.recordId : '');
     if (pickerKind === 'scene') setAutoSceneTag(item.name);
+    if (WORD_PROMPT_FIELDS.includes(pickerTargetId)) {
+      const source = item.libraryType === 'recipes'
+        ? recipesCache.find(record => String(record.id) === String(item.recordId))
+        : words().find(record => String(record.id) === String(item.recordId));
+      resetSeedForSource(source);
+    }
     saveSettings();
     closeDialog('pickerDialog');
     toast(button.dataset.pickerMode === 'append' ? '已追加到输入框' : '已替换输入框内容');
@@ -1709,6 +1745,7 @@ function applyPickedCharacters(mode) {
       ? [target.value.trim(), pickedPrompt].filter(Boolean).join(', ')
       : selectedCharactersPrompt(combinedIds);
   }
+  resetSeedForSource();
   saveSettings();
   closeDialog('pickerDialog');
   toast(`${pickedIds.length} 个人物已${mode === 'append' ? '追加' : '放入'}创作台`);
@@ -1922,6 +1959,7 @@ function useWord(id) {
     if (word.kind === 'scene') setAutoSceneTag(word.name);
   }
   if (word.kind === 'artist' || word.kind === 'bundle') syncArtistRecipe();
+  resetSeedForSource(word);
   saveSettings();
   switchView('create');
   toast('已放入创作台');
