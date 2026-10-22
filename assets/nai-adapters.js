@@ -4,9 +4,10 @@
   const KEY = 'nai_studio_adapters_v1';
   const LIMIT = 64 * 1024;
   const BAD = new Set(['__proto__', 'constructor', 'prototype']);
-  const SOURCES = ['model','fullPrompt','negativePrompt','scenePrompt','characterPrompt','artistPrompt','positivePrompt','size','width','height','steps','scale','sampler','seed','noiseSchedule','transparentBg'];
-  const LABELS = {model:'模型',fullPrompt:'完整正向词',negativePrompt:'负面词',scenePrompt:'画面描述',characterPrompt:'人物词',artistPrompt:'画师串',positivePrompt:'固定正面词',size:'尺寸',width:'宽度',height:'高度',steps:'步数',scale:'Guidance',sampler:'采样器',seed:'Seed',noiseSchedule:'噪声调度',transparentBg:'透明背景'};
+  const SOURCES = ['model','fullPrompt','negativePrompt','scenePrompt','characterPrompt','clothingPrompt','artistPrompt','positivePrompt','size','width','height','steps','scale','sampler','seed','noiseSchedule','transparentBg'];
+  const LABELS = {model:'模型',fullPrompt:'完整正向词',negativePrompt:'负面词',scenePrompt:'画面描述',characterPrompt:'人物词',clothingPrompt:'服装',artistPrompt:'画师串',positivePrompt:'固定正面词',size:'尺寸',width:'宽度',height:'高度',steps:'步数',scale:'Guidance',sampler:'采样器',seed:'Seed',noiseSchedule:'噪声调度',transparentBg:'透明背景'};
   const TYPES = ['string','number','integer','boolean'];
+  const PROMPT_SOURCES = ['fullPrompt','negativePrompt','scenePrompt','characterPrompt','clothingPrompt','artistPrompt','positivePrompt'];
   const $ = id => document.getElementById(id);
   let onChange = () => {}, getPresets = () => [], loadIssue = '';
   const plain = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype,null].includes(Object.getPrototypeOf(value));
@@ -25,6 +26,11 @@
     return list;
   }
   function primitive(value) { return value === null || typeof value === 'number' && Number.isFinite(value) || ['string','boolean'].includes(typeof value); }
+  function stableJSON(value) {
+    if (Array.isArray(value)) return '[' + value.map(stableJSON).join(',') + ']';
+    if (plain(value)) return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stableJSON(value[key])).join(',') + '}';
+    return JSON.stringify(value);
+  }
   function validate(input) {
     let serialized;
     try { serialized = JSON.stringify(input); } catch { fail('适配文件无法序列化'); }
@@ -55,13 +61,14 @@
       const list = parts(field.target);
       if (['n','n_samples'].includes(list.at(-1)) && field.value !== 1) fail('首版适配文件每次只生成1张图片');
       if (list.at(-1) === 'action' && field.value !== 'generate') fail('首版只支持generate文生图');
-      if (list.some(key => /^(?:authorization|api[_-]?key|access[_-]?token|password|secret|token)$/i.test(key))) fail('认证密钥不能写进请求映射，请使用auth');
+      if (list.some(key => /^(?:authorization|apikey|accesstoken|password|secret|token|clientsecret|apitoken|bearertoken)$/i.test(key.replace(/[_-]/g,'')))) fail('认证密钥不能写进请求映射，请使用auth');
       if (targets.some(target => target === field.target || target.startsWith(field.target + '.') || field.target.startsWith(target + '.'))) fail('重复或冲突的目标路径：' + field.target);
       targets.push(field.target);
       const source = Object.hasOwn(field,'source'), value = Object.hasOwn(field,'value');
       if (source === value) fail(at + ' 必须只指定source或value其中一项');
       if (source) {
         if (!SOURCES.includes(field.source) || !TYPES.includes(field.type)) fail(at + ' 的source或type不受支持');
+        if (PROMPT_SOURCES.includes(field.source) && (field.type !== 'string' || field.map !== undefined)) fail(at + ' 提示词必须以string原样传递，不能使用值映射');
         sources.add(field.source);
         if (Object.hasOwn(field,'map')) {
           if (!plain(field.map) || !Object.keys(field.map).length || Object.keys(field.map).length > 40) fail(at + '.map须为1–40项的值映射');
@@ -82,13 +89,18 @@
     } else if (input.response.imagePath !== undefined || input.response.encoding !== undefined) fail('image/zip返回不需要imagePath或encoding');
     return JSON.parse(serialized);
   }
+  function storedRecords() {
+    const stored = JSON.parse(localStorage.getItem(KEY) || '[]');
+    if (!Array.isArray(stored) || stored.length > 64) fail('已存适配数据不是有效列表，请先检查或恢复本地数据');
+    return stored;
+  }
   function list() {
     loadIssue = '';
     try {
-      const stored = JSON.parse(localStorage.getItem(KEY) || '[]');
-      if (!Array.isArray(stored) || stored.length > 64) throw new Error();
+      const stored = storedRecords();
       const valid = [];
-      for (const config of stored) { try { valid.push(validate(config)); } catch { loadIssue = '部分已存适配文件无效，请重新导入。'; } }
+      const ids = new Set();
+      for (const config of stored) { try { const checked = validate(config); if (ids.has(checked.id)) throw new Error(); ids.add(checked.id); valid.push(checked); } catch { loadIssue = '部分已存适配文件无效或编号重复；请检查本地数据，原内容不会自动删除。'; } }
       return valid;
     } catch { loadIssue = '已存适配文件无法读取，请重新导入。'; return []; }
   }
@@ -98,6 +110,7 @@
     if (!id) return null;
     const config = list().find(item => item.id === id);
     if (!config) fail('选中的适配文件缺失或无效，请重新导入或切回默认格式');
+    if (storedRecords().filter(item => item?.id === id).length !== 1) fail('当前适配文件编号重复，请先检查本地数据；未发送请求');
     return config;
   }
   function matches(config, endpoint) {
@@ -132,12 +145,13 @@
           value = field.map[String(value)];
           if (value === null) fail(field.source + '的值映射不能为null');
         }
+        if (['model','size','sampler','noiseSchedule'].includes(field.source) && typeof value === 'string' && !value.trim()) fail(LABELS[field.source] + '不能为空，请重新选择参数或检查值映射');
         if (field.type === 'string') value = String(value);
         else if (field.type === 'boolean') { if (typeof value !== 'boolean') fail(field.source + ' 不是布尔值'); }
         else {
-          if (value === '' || typeof value === 'boolean') fail(field.source + ' 不是有效数字');
+          if (typeof value !== 'number' && typeof value !== 'string' || typeof value === 'string' && !value.trim()) fail(field.source + ' 不是有效数字');
           value = Number(value);
-          if (!Number.isFinite(value) || field.type === 'integer' && !Number.isInteger(value)) fail(field.source + ' 不是有效' + (field.type === 'integer' ? '整数' : '数字'));
+          if (!Number.isFinite(value) || field.type === 'integer' && !Number.isSafeInteger(value)) fail(field.source + ' 不是有效' + (field.type === 'integer' ? '安全整数' : '数字'));
         }
       }
       const path = parts(field.target); let target = body;
@@ -170,6 +184,7 @@
   function render() {
     const status = $('apiAdapterStatus'), preview = $('apiAdapterPreview'); if (!status || !preview) return;
     preview.replaceChildren();
+    if ($('adapterCheckResult')) { $('adapterCheckResult').textContent = ''; $('adapterCheckPreview').textContent = ''; $('adapterCheckPreview').hidden = true; }
     $('apiAdapterSummary').textContent = selectedId() ? '已选择适配' : '自动识别';
     $('exportApiAdapter').disabled = $('removeApiAdapter').disabled = !selectedId();
     try {
@@ -177,7 +192,7 @@
       if (!config) { status.textContent = loadIssue || '按工具内置规则连接；也可导入站点适配文件。'; status.className = 'adapter-status'; return; }
       const match = matches(config,$('endpoint').value.trim()) && $('apiMode').value === 'proxy';
       $('apiAdapterSummary').textContent = config.name + (match ? '' : ' · 未匹配');
-      status.textContent = (match ? '地址匹配 · 格式已检查，效果尚未核实。' : '当前连接方式或接口地址不匹配；生成前需修改。') + ' 选择后请保存 API 预设。';
+      status.textContent = (match ? '地址匹配 · 格式已检查，效果尚未核实。' : '当前连接方式或接口地址不匹配；生成前需修改。') + ' 选择后请保存 API 预设。' + (loadIssue ? ' ' + loadIssue : '');
       status.className = 'adapter-status' + (match ? '' : ' adapter-error');
       const info = document.createElement('p'); info.textContent = [config.description || '', '适用地址：' + config.allowedUrls.join('；'), '返回：' + config.response.format + (config.response.imagePath ? ' / ' + config.response.imagePath : '')].filter(Boolean).join('\n'); preview.append(info);
       const table = document.createElement('table'); const caption = document.createElement('caption'); caption.textContent = '参数对应关系'; table.append(caption);
@@ -188,14 +203,39 @@
   function changed() { render(); try { onChange(); } catch (error) { $('apiAdapterMessage').textContent = '设置未能保存：' + error.message; } }
   function importConfig(input) {
     const config = validate(input), records = list();
+    if (loadIssue) fail(loadIssue + ' 本次未修改已存文件。');
     const same = records.find(item => item.id === config.id);
-    if (same && JSON.stringify(same) === JSON.stringify(config)) { setSelected(config.id); changed(); return config; }
+    if (same && stableJSON(same) === stableJSON(config)) { setSelected(config.id); changed(); return config; }
     if (records.length >= 64) fail('最多保存64个适配文件，请先移除不再使用的配置');
     if (same) { config.id = config.id.slice(0,48) + '-' + crypto.randomUUID().slice(0,8); config.name = config.name.slice(0,72) + '（副本）'; }
     localStorage.setItem(KEY,JSON.stringify([...records,config])); setSelected(config.id); changed(); return config;
   }
   function download(value, filename) {
     const url = URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'})); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
+  }
+  function checkCurrent() {
+    const result = $('adapterCheckResult'), preview = $('adapterCheckPreview');
+    preview.textContent = ''; preview.hidden = true;
+    try {
+      const meta = collectMeta();
+      const config = requireFor($('endpoint').value.trim(), $('apiMode').value, meta);
+      if (!config) fail('请先选择已导入的适配文件；默认格式不需要文件检查。');
+      const random = meta.seed === '' || meta.seed == null;
+      for (const id of ['steps','scale']) if (!$(id).checkValidity()) fail(id === 'steps' ? '步数须为1–50的整数' : 'Guidance须为0–20的数字');
+      if (random) meta.seed = '0';
+      if (!/^\d+$/.test(meta.seed) || Number(meta.seed) > 4294967295) fail('Seed须留空或填写0–4294967295的整数');
+      const body = build(config, meta);
+      // This preview never uses the Token, calls fetch, or prepares paid Vibe.
+      for (const field of config.request.fields) {
+        if (!PROMPT_SOURCES.includes(field.source)) continue;
+        const path = parts(field.target); let target = body;
+        for (const key of path.slice(0,-1)) target = target[key];
+        target[path.at(-1)] = '[已隐藏提示词]';
+      }
+      preview.textContent = JSON.stringify(body, null, 2); preview.hidden = false;
+      result.textContent = '本地检查通过：地址、必填映射及当前参数可构建请求。预览已隐藏提示词，不含密钥。' + (random ? ' 随机Seed暂用0占位。' : '') + ' 未发送请求；服务端是否采用参数仍需核对返回原图。';
+      result.className = 'adapter-status';
+    } catch (error) { result.textContent = '本地检查未通过：' + error.message; result.className = 'adapter-status adapter-error'; }
   }
   const field = (target,source,type = 'string') => ({target,source,type});
   function example(kind) {
@@ -207,7 +247,9 @@
     return {format:'nai-lens-adapter',version:1,id:yes?'yesnai-images-v1':'aurora-images-v1',name:yes?'YesNAI 兼容生图':'Aurora 兼容生图',description:yes?'依据公开文档；此文件仍需用你自己的返回原图核对。':'依据公开OpenAPI；尚未进行真实生成核验。',allowedUrls:yes?['https://ynai.rinko.ai/v1/images/generations','https://nai.rinko.ai/v1/images/generations']:['https://love.auroralove.cc/api/v1/images/generations','https://love.auroralove.cc/v1/images/generations'],auth:{type:'bearer'},request:{fields},response:{format:'json',imagePath:'data.0.b64_json',encoding:'base64'}};
   }
   function schema() {
-    return {$schema:'https://json-schema.org/draft/2020-12/schema',title:'NAI 镜头台适配文件 v1',type:'object',additionalProperties:false,required:['format','version','id','name','allowedUrls','auth','request','response'],properties:{format:{const:'nai-lens-adapter'},version:{const:1},id:{type:'string',pattern:'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$'},name:{type:'string',minLength:1,maxLength:80},description:{type:'string',maxLength:600},allowedUrls:{type:'array',minItems:1,maxItems:12,items:{type:'string',format:'uri',description:'完整HTTP(S)接口地址，不能包含账号、查询、片段或通配符'}},auth:{oneOf:[{type:'object',additionalProperties:false,required:['type'],properties:{type:{const:'bearer'}}},{type:'object',additionalProperties:false,required:['type','name'],properties:{type:{const:'header'},name:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9-]{0,63}$'}}}]},request:{type:'object',additionalProperties:false,required:['fields'],properties:{fields:{type:'array',minItems:1,maxItems:96,items:{$ref:'#/$defs/field'}}}},response:{oneOf:[{type:'object',additionalProperties:false,required:['format','imagePath','encoding'],properties:{format:{const:'json'},imagePath:{type:'string',description:'如data.0.b64_json或images.0'},encoding:{enum:['base64','url']}}},{type:'object',additionalProperties:false,required:['format'],properties:{format:{enum:['image','zip']}}}]}},$defs:{field:{oneOf:[{type:'object',additionalProperties:false,required:['target','source','type'],properties:{target:{type:'string'},source:{enum:SOURCES},type:{enum:TYPES},map:{type:'object',maxProperties:40,additionalProperties:{type:['string','number','boolean','null']}}}},{type:'object',additionalProperties:false,required:['target','value'],properties:{target:{type:'string'},value:{oneOf:[{type:['string','number','boolean','null']},{type:'array',maxItems:16,items:{type:['string','number','boolean','null']}}]}}}]}}};
+    const specification = {$schema:'https://json-schema.org/draft/2020-12/schema',title:'NAI 镜头台适配文件 v1',type:'object',additionalProperties:false,required:['format','version','id','name','allowedUrls','auth','request','response'],properties:{format:{const:'nai-lens-adapter'},version:{const:1},id:{type:'string',pattern:'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$'},name:{type:'string',minLength:1,maxLength:80},description:{type:'string',maxLength:600},allowedUrls:{type:'array',minItems:1,maxItems:12,items:{type:'string',format:'uri',description:'完整HTTP(S)接口地址，不能包含账号、查询、片段或通配符'}},auth:{oneOf:[{type:'object',additionalProperties:false,required:['type'],properties:{type:{const:'bearer'}}},{type:'object',additionalProperties:false,required:['type','name'],properties:{type:{const:'header'},name:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9-]{0,63}$'}}}]},request:{type:'object',additionalProperties:false,required:['fields'],properties:{fields:{type:'array',minItems:1,maxItems:96,items:{$ref:'#/$defs/field'}}}},response:{oneOf:[{type:'object',additionalProperties:false,required:['format','imagePath','encoding'],properties:{format:{const:'json'},imagePath:{type:'string',description:'如data.0.b64_json或images.0'},encoding:{enum:['base64','url']}}},{type:'object',additionalProperties:false,required:['format'],properties:{format:{enum:['image','zip']}}}]}},$defs:{field:{oneOf:[{type:'object',additionalProperties:false,required:['target','source','type'],properties:{target:{type:'string'},source:{enum:SOURCES},type:{enum:TYPES},map:{type:'object',maxProperties:40,additionalProperties:{type:['string','number','boolean','null']}}}},{type:'object',additionalProperties:false,required:['target','value'],properties:{target:{type:'string'},value:{oneOf:[{type:['string','number','boolean','null']},{type:'array',maxItems:16,items:{type:['string','number','boolean','null']}}]}}}]}}};
+    specification.$defs.field.oneOf[0].allOf = [{if:{properties:{source:{enum:PROMPT_SOURCES}},required:['source']},then:{properties:{type:{const:'string'}},not:{required:['map']}}}];
+    return specification;
   }
   function aiInstructions() {
     return '请根据我随后提供的服务商公开接口文档，为NAI镜头台生成一个可导入的JSON适配文件。只输出单个JSON文件，不要Markdown代码围栏。\n'
@@ -216,6 +258,7 @@
       + 'request.fields逐项将source映射到target。source可用：'+SOURCES.join(', ')+'。width/height从size拆分；fullPrompt是完整拼接正向词。type为string/number/integer/boolean。可用map对模型名等做明确的值映射，缺失值会报错，不会静默回退。常量用value，不能同时出现source。target是点分对象路径，不支持数组写入。\n'
       + '必须映射model/fullPrompt/negativePrompt/steps/scale/sampler/seed/noiseSchedule，并映射size或width+height，避免生成时静默漏参。若站点不支持必要字段，请说明，不能省略后伪装支持。JSON大小64KB内，字段路径最深8层，禁止__proto__/prototype/constructor和请求体密钥字段。\n'
       + 'response.format为json/image/zip。json须提供imagePath（数组下标用点，如data.0.b64_json）和encoding（base64或url；url也允许data:image）。非JSON不写imagePath和encoding。不会自动尝试多种请求或收费重试。\n'
+      + '不要同时堆叠size、width/height及多层尺寸字段；只使用文档明确要求的位置。负面词必须完整映射自negativePrompt，不得改写、补预设或把它替换成常量。不得用不相关模型的规范推断NAI协议。导入后可用“本地检查适配”检查当前模型和值映射；此操作不访问接口，也不能证明服务端采用了参数。\n'
       + '以下JSON Schema是结构规范，工具还会执行上述语义校验。导入通过只表示格式可读取，效果需返回原图核对。\n'+JSON.stringify(schema(),null,2)
       + '\n完整示例一（YesNAI，NAI扩展在nai里）：\n'+JSON.stringify(example('yesnai'),null,2)
       + '\n完整示例二（Aurora，顶层参数、字符串Seed）：\n'+JSON.stringify(example('aurora'),null,2)
@@ -228,8 +271,12 @@
     for (const id of ['endpoint','apiMode']) $(id).addEventListener('input',render);
     for (const id of ['endpoint','apiMode']) $(id).addEventListener('change',render);
     $('importApiAdapter').onclick = () => $('apiAdapterFile').click();
+    $('checkApiAdapter').onclick = checkCurrent;
+    for (const id of [...PROMPT_SOURCES.filter(id => $(id)), 'model','size','steps','scale','seed','sampler','noiseSchedule','transparentBg']) $(id).addEventListener('input', () => {
+      if ($('adapterCheckResult').textContent) { $('adapterCheckResult').textContent = '参数已变化，请重新进行本地检查。'; $('adapterCheckPreview').hidden = true; }
+    });
     $('apiAdapterFile').onchange = async event => {
-      try { const file = event.target.files?.[0]; if (!file) return; if (file.size > LIMIT) fail('适配文件超过64 KB'); const config = importConfig(JSON.parse(await file.text())); $('apiAdapterMessage').textContent = '已导入“'+config.name+'”；请核对地址并保存API预设。'; }
+      try { const file = event.target.files?.[0]; if (!file) return; if (file.size > LIMIT) fail('适配文件超过64 KB'); let input; try { input = JSON.parse((await file.text()).replace(/^\uFEFF/,'')); } catch { fail('JSON格式无效；请选择JSON文件，去掉Markdown代码围栏并检查逗号和引号'); } const config = importConfig(input); const notice = $('apiAdapterMessage').textContent; $('apiAdapterMessage').textContent = '已导入“'+config.name+'”；请先本地检查，再核对地址并保存API预设。' + (notice ? ' ' + notice : ''); }
       catch (error) { $('apiAdapterMessage').textContent = '导入失败：'+error.message; }
       finally { event.target.value = ''; }
     };
@@ -237,9 +284,10 @@
     $('removeApiAdapter').onclick = () => {
       try {
         const id = selectedId(); if (!id) return;
+        selected();
         const used = getPresets().filter(preset => preset.adapterId === id);
         if (used.length) fail('适配文件仍被API预设使用：'+used.map(preset=>preset.name).join('、')+'。请先修改或删除这些预设。');
-        localStorage.setItem(KEY,JSON.stringify(list().filter(item => item.id !== id))); setSelected(''); changed(); $('apiAdapterMessage').textContent = '适配文件已移除。';
+        localStorage.setItem(KEY,JSON.stringify(storedRecords().filter(item => item?.id !== id))); setSelected(''); changed(); $('apiAdapterMessage').textContent = '适配文件已移除。';
       } catch (error) { $('apiAdapterMessage').textContent = error.message; }
     };
     $('downloadAdapterExample').onclick = () => { const config = example($('adapterExampleKind').value); download(config,config.id+'.json'); };

@@ -1,0 +1,447 @@
+请根据我随后提供的服务商公开接口文档，为NAI镜头台生成一个可导入的JSON适配文件。只输出单个JSON文件，不要Markdown代码围栏。
+规范版本1：单次POST文生图请求；不支持脚本、表达式、流式、排队轮询、签名计算、Vibe或重试。n/n_samples如有，必须为常量1；action如有，必须为常量generate。若文档需要这些功能，或无法确认负面词/Guidance/采样器/Seed等必要字段，请先说明不支持或缺失的信息，不要猜测或假称已验证。不要索取、包含或编造API密钥。
+allowedUrls必须是文档中的完整接口地址（无账号、查询、片段、通配符），工具不会自动拼接或重写地址。auth只描述Bearer或自定义认证头，密钥由工具输入。
+request.fields逐项将source映射到target。source可用：model, fullPrompt, negativePrompt, scenePrompt, characterPrompt, clothingPrompt, artistPrompt, positivePrompt, size, width, height, steps, scale, sampler, seed, noiseSchedule, transparentBg。width/height从size拆分；fullPrompt是完整拼接正向词。type为string/number/integer/boolean。可用map对模型名等做明确的值映射，缺失值会报错，不会静默回退。常量用value，不能同时出现source。target是点分对象路径，不支持数组写入。
+必须映射model/fullPrompt/negativePrompt/steps/scale/sampler/seed/noiseSchedule，并映射size或width+height，避免生成时静默漏参。若站点不支持必要字段，请说明，不能省略后伪装支持。JSON大小64KB内，字段路径最深8层，禁止__proto__/prototype/constructor和请求体密钥字段。
+response.format为json/image/zip。json须提供imagePath（数组下标用点，如data.0.b64_json）和encoding（base64或url；url也允许data:image）。非JSON不写imagePath和encoding。不会自动尝试多种请求或收费重试。
+不要同时堆叠size、width/height及多层尺寸字段；只使用文档明确要求的位置。负面词必须完整映射自negativePrompt，不得改写、补预设或把它替换成常量。不得用不相关模型的规范推断NAI协议。导入后可用“本地检查适配”检查当前模型和值映射；此操作不访问接口，也不能证明服务端采用了参数。
+以下JSON Schema是结构规范，工具还会执行上述语义校验。导入通过只表示格式可读取，效果需返回原图核对。
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NAI 镜头台适配文件 v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "version",
+    "id",
+    "name",
+    "allowedUrls",
+    "auth",
+    "request",
+    "response"
+  ],
+  "properties": {
+    "format": {
+      "const": "nai-lens-adapter"
+    },
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 600
+    },
+    "allowedUrls": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "format": "uri",
+        "description": "完整HTTP(S)接口地址，不能包含账号、查询、片段或通配符"
+      }
+    },
+    "auth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "bearer"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "name"
+          ],
+          "properties": {
+            "type": {
+              "const": "header"
+            },
+            "name": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9-]{0,63}$"
+            }
+          }
+        }
+      ]
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fields"
+      ],
+      "properties": {
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 96,
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        }
+      }
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "format",
+            "imagePath",
+            "encoding"
+          ],
+          "properties": {
+            "format": {
+              "const": "json"
+            },
+            "imagePath": {
+              "type": "string",
+              "description": "如data.0.b64_json或images.0"
+            },
+            "encoding": {
+              "enum": [
+                "base64",
+                "url"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "format"
+          ],
+          "properties": {
+            "format": {
+              "enum": [
+                "image",
+                "zip"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "field": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "target",
+            "source",
+            "type"
+          ],
+          "properties": {
+            "target": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "model",
+                "fullPrompt",
+                "negativePrompt",
+                "scenePrompt",
+                "characterPrompt",
+                "clothingPrompt",
+                "artistPrompt",
+                "positivePrompt",
+                "size",
+                "width",
+                "height",
+                "steps",
+                "scale",
+                "sampler",
+                "seed",
+                "noiseSchedule",
+                "transparentBg"
+              ]
+            },
+            "type": {
+              "enum": [
+                "string",
+                "number",
+                "integer",
+                "boolean"
+              ]
+            },
+            "map": {
+              "type": "object",
+              "maxProperties": 40,
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "source": {
+                    "enum": [
+                      "fullPrompt",
+                      "negativePrompt",
+                      "scenePrompt",
+                      "characterPrompt",
+                      "clothingPrompt",
+                      "artistPrompt",
+                      "positivePrompt"
+                    ]
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "type": {
+                    "const": "string"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "map"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "target",
+            "value"
+          ],
+          "properties": {
+            "target": {
+              "type": "string"
+            },
+            "value": {
+              "oneOf": [
+                {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+完整示例一（YesNAI，NAI扩展在nai里）：
+{
+  "format": "nai-lens-adapter",
+  "version": 1,
+  "id": "yesnai-images-v1",
+  "name": "YesNAI 兼容生图",
+  "description": "依据公开文档；此文件仍需用你自己的返回原图核对。",
+  "allowedUrls": [
+    "https://ynai.rinko.ai/v1/images/generations",
+    "https://nai.rinko.ai/v1/images/generations"
+  ],
+  "auth": {
+    "type": "bearer"
+  },
+  "request": {
+    "fields": [
+      {
+        "target": "model",
+        "source": "model",
+        "type": "string"
+      },
+      {
+        "target": "prompt",
+        "source": "fullPrompt",
+        "type": "string"
+      },
+      {
+        "target": "size",
+        "source": "size",
+        "type": "string"
+      },
+      {
+        "target": "n",
+        "value": 1
+      },
+      {
+        "target": "response_format",
+        "value": "b64_json"
+      },
+      {
+        "target": "nai.negative_prompt",
+        "source": "negativePrompt",
+        "type": "string"
+      },
+      {
+        "target": "nai.steps",
+        "source": "steps",
+        "type": "integer"
+      },
+      {
+        "target": "nai.scale",
+        "source": "scale",
+        "type": "number"
+      },
+      {
+        "target": "nai.sampler",
+        "source": "sampler",
+        "type": "string"
+      },
+      {
+        "target": "nai.seed",
+        "source": "seed",
+        "type": "integer"
+      },
+      {
+        "target": "nai.noise_schedule",
+        "source": "noiseSchedule",
+        "type": "string"
+      },
+      {
+        "target": "nai.action",
+        "value": "generate"
+      },
+      {
+        "target": "nai.qualityToggle",
+        "value": false
+      },
+      {
+        "target": "nai.ucPreset",
+        "value": 4
+      }
+    ]
+  },
+  "response": {
+    "format": "json",
+    "imagePath": "data.0.b64_json",
+    "encoding": "base64"
+  }
+}
+完整示例二（Aurora，顶层参数、字符串Seed）：
+{
+  "format": "nai-lens-adapter",
+  "version": 1,
+  "id": "aurora-images-v1",
+  "name": "Aurora 兼容生图",
+  "description": "依据公开OpenAPI；尚未进行真实生成核验。",
+  "allowedUrls": [
+    "https://love.auroralove.cc/api/v1/images/generations",
+    "https://love.auroralove.cc/v1/images/generations"
+  ],
+  "auth": {
+    "type": "bearer"
+  },
+  "request": {
+    "fields": [
+      {
+        "target": "model",
+        "source": "model",
+        "type": "string"
+      },
+      {
+        "target": "prompt",
+        "source": "fullPrompt",
+        "type": "string"
+      },
+      {
+        "target": "size",
+        "source": "size",
+        "type": "string"
+      },
+      {
+        "target": "n",
+        "value": 1
+      },
+      {
+        "target": "response_format",
+        "value": "b64_json"
+      },
+      {
+        "target": "negative_prompt",
+        "source": "negativePrompt",
+        "type": "string"
+      },
+      {
+        "target": "steps",
+        "source": "steps",
+        "type": "integer"
+      },
+      {
+        "target": "scale",
+        "source": "scale",
+        "type": "number"
+      },
+      {
+        "target": "sampler",
+        "source": "sampler",
+        "type": "string"
+      },
+      {
+        "target": "seed",
+        "source": "seed",
+        "type": "string"
+      },
+      {
+        "target": "noise_schedule",
+        "source": "noiseSchedule",
+        "type": "string"
+      }
+    ]
+  },
+  "response": {
+    "format": "json",
+    "imagePath": "data.0.b64_json",
+    "encoding": "base64"
+  }
+}
+请等待我提供接口文档或完整的去密钥请求/响应示例，再生成文件。

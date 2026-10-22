@@ -18,9 +18,15 @@
 
 ### 下载单文件版
 
-[下载 v2.21 单文件版](download/nai-lens-studio-v2.21-standalone.html)
+[下载 v2.22 单文件版](download/nai-lens-studio-v2.22-standalone.html)
 
 下载后直接用浏览器打开即可。单文件版已经内嵌主程序、ZIP 解析组件和标题字体，适合保存到电脑或发送到手机使用。
+
+## v2.22 文件夹排序与接口适配检查
+
+配方档案文件夹可通过标题旁的六点手柄拖动排序，支持鼠标、触控及键盘，顺序随备份保留。接口适配增加不联网的“本地检查适配”，完善导入、参数校验与错误反馈，并修复若干存储、备份和 Vibe 状态问题。代码已按职责整理，原有界面及数据格式保留。
+
+这是个人自用工具，维护时间与精力有限，问题修复和功能请求可能无法及时处理。接口适配文件决定各服务商的参数与返回格式如何对应；先核对地址、密钥、额度和模型，再检查适配映射，最后核对返回原图及服务商文档。成功出图或本地检查通过不代表全部参数生效；Fox 横竖尺寸问题尚未确认原因。详见 [适配文件说明](adapters/README.md)。更新前请备份档案，并单独导出适配文件。
 
 ## v2.21 复用后默认随机种子
 
@@ -107,10 +113,18 @@ Vibe 目前用于 V3、V4.5 等兼容模型，V5 下暂停发送并保留选择�
 
 ```text
 index.html                         在线版入口
-assets/nai-studio.js               主程序
+assets/nai-studio.js               共享界面、状态与档案控制
+assets/nai-storage.js              数据库与存储事务
+assets/nai-generation.js           生图请求与流程
+assets/nai-image-metadata.js       图片元数据读取
+assets/nai-image-import.js         图片导入归档
+assets/nai-backup.js               备份与恢复
+assets/nai-vibes.js                Vibe 控制
+assets/nai-boot.js                 最后执行的启动入口
+assets/nai-base.css                基础样式
 assets/nai-adapters.js             声明式接口适配与设置
 adapters/                         适配规范与示例
-assets/nai-features.js             文件夹、取词排序与图片元数据兼容
+assets/nai-features.js             文件夹、取词排序与筛选
 assets/flat-ui.css                 用户确认的无卡片视觉系统
 assets/flat-controls.js            SVG 工具与按需说明
 assets/jszip.min.js                ZIP 解析依赖

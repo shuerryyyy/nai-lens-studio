@@ -159,6 +159,7 @@
                 "negativePrompt",
                 "scenePrompt",
                 "characterPrompt",
+                "clothingPrompt",
                 "artistPrompt",
                 "positivePrompt",
                 "size",
@@ -192,7 +193,41 @@
                 ]
               }
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "source": {
+                    "enum": [
+                      "fullPrompt",
+                      "negativePrompt",
+                      "scenePrompt",
+                      "characterPrompt",
+                      "clothingPrompt",
+                      "artistPrompt",
+                      "positivePrompt"
+                    ]
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "type": {
+                    "const": "string"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "map"
+                  ]
+                }
+              }
+            }
+          ]
         },
         {
           "type": "object",

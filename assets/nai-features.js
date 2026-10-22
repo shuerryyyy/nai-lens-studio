@@ -2,12 +2,19 @@
 /* Library organization and metadata compatibility; no service credentials live here. */
 const COLLECTION_TYPES = ['recipes', 'artworks', 'words', 'characters'];
 let collectionsCache = [];
+const collectionOrderSaving = new Set();
+let cancelFolderDrag = null;
 
 function normalizeCollection(item) {
   if (!item || !COLLECTION_TYPES.includes(item.libraryType) || typeof item.name !== 'string' || !item.name.trim()) throw new Error('备份中的文件夹资料无效');
-  return { id: String(item.id || makeId()), libraryType: item.libraryType, name: item.name.trim().slice(0, 200), createdAt: Number(item.createdAt) || Date.now(), updatedAt: Number(item.updatedAt) || Date.now(), ...(typeof item.transferId === 'string' ? { transferId: item.transferId } : {}) };
+  return { id: String(item.id || makeId()), libraryType: item.libraryType, name: item.name.trim().slice(0, 200), createdAt: Number(item.createdAt) || Date.now(), updatedAt: Number(item.updatedAt) || Date.now(), ...(Number.isSafeInteger(item.manualOrder) ? { manualOrder: item.manualOrder } : {}), ...(typeof item.transferId === 'string' ? { transferId: item.transferId } : {}) };
 }
 async function refreshCollections() { collectionsCache = (await dbAll('collections')).map(normalizeCollection); }
+function orderedCollections(type) {
+  return collectionsCache.filter(item => item.libraryType === type)
+    .map((item, index) => ({ item, rank: item.manualOrder ?? index, index }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index).map(entry => entry.item);
+}
 function renderCollectionLibrary(type) {
   ({ recipes: renderRecipes, artworks: renderImageLibrary, words: renderWords, characters: renderCharacters })[type]();
 }
@@ -15,7 +22,9 @@ async function createCollection(type, name) {
   name = String(name || '').trim().slice(0, 200);
   if (!name) throw new Error('请填写文件夹名称');
   if (collectionsCache.some(item => item.libraryType === type && item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new Error('这个资料库已有同名文件夹');
-  const record = normalizeCollection({ id: makeId(), libraryType: type, name });
+  const folders = orderedCollections(type);
+  const manualOrder = Math.max(-1, ...folders.map((item, index) => item.manualOrder ?? index)) + 1;
+  const record = normalizeCollection({ id: makeId(), libraryType: type, name, manualOrder });
   await dbPut('collections', record);
   await refreshCollections();
   renderCollectionLibrary(type);
@@ -75,8 +84,103 @@ function quietTool(name, label) {
   button.innerHTML = icon(name);
   return button;
 }
+// Store only order changes, using fresh records in one transaction so renames and
+// other libraries cannot be overwritten by a stale drag snapshot.
+async function saveCollectionOrder(type, ids) {
+  if (collectionOrderSaving.has(type)) return;
+  collectionOrderSaving.add(type);
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('collections', 'readwrite'), store = tx.objectStore('collections');
+      let failure;
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(failure || tx.error || new Error('排序保存失败，原顺序已保留'));
+      tx.onerror = () => {};
+      const request = store.getAll();
+      request.onsuccess = () => {
+        try {
+          const folders = request.result.filter(item => item.libraryType === type);
+          if (ids.length !== folders.length || new Set(ids).size !== ids.length || folders.some(item => !ids.includes(item.id))) throw new Error('文件夹已变化，请重新排序');
+          const order = new Map(ids.map((id, index) => [id, index]));
+          for (const folder of folders) store.put({ ...folder, manualOrder: order.get(folder.id), updatedAt: Date.now() });
+        } catch (error) { failure = error; tx.abort(); }
+      };
+    });
+    if ($('collectionOrderStatus')) $('collectionOrderStatus').textContent = '文件夹顺序已保存';
+  } catch (error) { toast(error.message); }
+  finally {
+    collectionOrderSaving.delete(type);
+    try { await refreshCollections(); renderCollectionLibrary(type); }
+    catch (error) { toast('无法刷新文件夹：' + error.message); }
+  }
+}
+function bindCollectionSort(handle, section, host, type) {
+  const groups = () => [...host.children].filter(node => node.dataset.folderId);
+  const ids = () => groups().map(node => node.dataset.folderId);
+  const restoreFocus = () => [...host.querySelectorAll('[data-folder-sort]')].find(node => node.dataset.folderSort === section.dataset.folderId)?.focus({ preventScroll: true });
+  handle.onkeydown = async event => {
+    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    if (collectionOrderSaving.has(type) || cancelFolderDrag) return;
+    const nodes = groups(), index = nodes.indexOf(section);
+    const target = event.key === 'Home' ? 0 : event.key === 'End' ? nodes.length - 1 : index + (event.key === 'ArrowUp' ? -1 : 1);
+    if (target < 0 || target >= nodes.length || target === index) return;
+    nodes.splice(index, 1); nodes.splice(target, 0, section);
+    await saveCollectionOrder(type, nodes.map(node => node.dataset.folderId)); restoreFocus();
+  };
+  handle.onpointerdown = event => {
+    if (!event.isPrimary || event.button !== 0 || collectionOrderSaving.has(type)) return;
+    cancelFolderDrag?.();
+    const before = ids(), pointerId = event.pointerId, startY = event.clientY;
+    let dragging = false, lastY = startY, frame = 0;
+    const reorderAt = y => {
+      const next = groups().filter(node => node !== section).find(node => {
+        const rect = node.querySelector('.folder-heading').getBoundingClientRect();
+        return y < rect.top + rect.height / 2;
+      });
+      const anchor = next || [...host.children].find(node => node.dataset.folderId === '') || null;
+      if (section.nextElementSibling !== anchor) { host.insertBefore(section, anchor); handle.setPointerCapture(pointerId); }
+    };
+    const scroll = () => {
+      if (!dragging) return;
+      const delta = lastY < 64 ? -12 : lastY > innerHeight - 80 ? 12 : 0;
+      if (delta) { window.scrollBy(0, delta); reorderAt(lastY); }
+      frame = requestAnimationFrame(scroll);
+    };
+    const move = e => {
+      if (e.pointerId !== pointerId) return;
+      if (!section.isConnected) { finish(false); return; }
+      lastY = e.clientY;
+      if (!dragging && Math.abs(lastY - startY) < 6) return;
+      e.preventDefault();
+      if (!dragging) { dragging = true; section.classList.add('folder-dragging'); handle.setAttribute('aria-pressed', 'true'); frame = requestAnimationFrame(scroll); }
+      reorderAt(lastY);
+    };
+    const finish = commit => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', cancel); window.removeEventListener('blur', cancel); window.removeEventListener('keydown', key);
+      cancelFolderDrag = null;
+      section.classList.remove('folder-dragging'); handle.setAttribute('aria-pressed', 'false');
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      if (!dragging) return;
+      const after = ids();
+      if (commit && JSON.stringify(after) !== JSON.stringify(before)) saveCollectionOrder(type, after).then(restoreFocus).catch(error => toast(error.message));
+      else if (!commit) {
+        const anchor = [...host.children].find(node => node.dataset.folderId === '') || null;
+        for (const id of before) { const node = groups().find(node => node.dataset.folderId === id); if (node) host.insertBefore(node, anchor); }
+      }
+    };
+    const up = e => { if (e.pointerId === pointerId) finish(true); };
+    const cancel = () => finish(false);
+    const key = e => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+    cancelFolderDrag = cancel;
+    handle.setPointerCapture(pointerId);
+    window.addEventListener('pointermove', move, { passive: false }); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', cancel); window.addEventListener('blur', cancel); window.addEventListener('keydown', key);
+  };
+}
 function groupRenderedLibrary(type, list, host, selector) {
-  const folders = collectionsCache.filter(item => item.libraryType === type);
+  if (type === 'recipes') cancelFolderDrag?.();
+  const folders = orderedCollections(type);
   host.classList.toggle('folder-mode', folders.length > 0);
   if (!folders.length) return;
   const nodes = [...host.querySelectorAll(`:scope > ${selector}`)];
@@ -86,7 +190,7 @@ function groupRenderedLibrary(type, list, host, selector) {
   const groups = [...folders.map(folder => ({ folder, entries: entries.filter(item => item.record.folderId === folder.id) })), { folder: { id: '', name: '未归入文件夹' }, entries: entries.filter(item => !validIds.has(item.record.folderId)) }];
   for (const { folder, entries: grouped } of groups) {
     if (!folder.id && !grouped.length) continue;
-    const section = document.createElement('section'); section.className = 'folder-group';
+    const section = document.createElement('section'); section.className = 'folder-group'; section.dataset.folderId = folder.id;
     const header = document.createElement('div'); header.className = 'folder-heading';
     const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'folder-toggle';
     toggle.innerHTML = `${icon('chevron-right')}${icon('folder')}<span>${escapeHTML(folder.name)}</span><small>${grouped.length}</small>`;
@@ -95,12 +199,19 @@ function groupRenderedLibrary(type, list, host, selector) {
     const stateKey = `nai_folder_open_${type}_${folder.id || 'unfiled'}`;
     let open = localStorage.getItem(stateKey) !== 'false';
     const setOpen = () => { body.hidden = !open; toggle.setAttribute('aria-expanded', String(open)); };
-    setOpen(); toggle.onclick = () => { open = !open; localStorage.setItem(stateKey, String(open)); setOpen(); };
+    setOpen(); toggle.onclick = () => { open = !open; setOpen(); try { localStorage.setItem(stateKey, String(open)); } catch { toast('已切换展开状态，但浏览器未能记住设置'); } };
+    if (type === 'recipes' && folder.id) {
+      const handle = quietTool('grip-vertical', `拖动排序：${folder.name}；也可用上下方向键、Home 或 End 调整`);
+      handle.classList.add('folder-sort-handle'); handle.dataset.folderSort = folder.id;
+      handle.setAttribute('aria-pressed', 'false'); handle.disabled = folders.length < 2;
+      bindCollectionSort(handle, section, host, type); header.append(handle);
+    }
     header.append(toggle);
     if (folder.id) {
       const rename = quietTool('pencil', `重命名文件夹：${folder.name}`);
       rename.onclick = async () => {
-        const name = prompt('文件夹名称', folder.name); if (name === null) return;
+        const input = prompt('文件夹名称', folder.name); if (input === null) return;
+        const name = input.trim().slice(0, 200);
         try {
           if (!name.trim()) throw new Error('名称不能为空');
           if (folders.some(item => item.id !== folder.id && item.name.toLocaleLowerCase() === name.trim().toLocaleLowerCase())) throw new Error('已有同名文件夹');
@@ -177,139 +288,7 @@ async function recordLibraryUse(type, id) {
   } catch { toast('已取用；最近使用记录未能保存'); }
 }
 
-function metadataText(...values) { return values.find(value => typeof value === 'string' && value.trim()) || ''; }
-function flattenImageMetadata(textMap) {
-  const result = Object.create(null);
-  const visit = (value, depth) => {
-    if (depth > 6 || !value || typeof value !== 'object' || Array.isArray(value)) return;
-    for (const [key, item] of Object.entries(value)) if (!['__proto__', 'constructor', 'prototype'].includes(key)) result[key] = item;
-    for (const key of ['Comment', 'comment', 'parameters', 'generation', 'metadata', 'data']) {
-      let nested = value[key];
-      if (typeof nested === 'string' && nested.length < 2 * 1024 * 1024) { try { nested = JSON.parse(nested); } catch { continue; } }
-      visit(nested, depth + 1);
-    }
-  };
-  visit(textMap, 0);
-  for (const value of Object.values(textMap)) if (typeof value === 'string' && value.length < 2 * 1024 * 1024) { try { visit(JSON.parse(value), 0); } catch {} }
-  return result;
-}
-
-/* TIFF UserComment is used by JPEG/WebP exporters. All offsets are bounded. */
-function readExifText(bytes, text) {
-  if (bytes.length >= 6 && decodeText(bytes.subarray(0, 4)) === 'Exif') bytes = bytes.subarray(6);
-  if (bytes.length < 8) return;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const little = bytes[0] === 73 && bytes[1] === 73;
-  if (!little && !(bytes[0] === 77 && bytes[1] === 77)) return;
-  if (view.getUint16(2, little) !== 42) return;
-  const visited = new Set();
-  const readIFD = (offset, depth) => {
-    if (depth > 3 || offset < 8 || offset + 2 > bytes.length || visited.has(offset)) return;
-    visited.add(offset);
-    const count = Math.min(view.getUint16(offset, little), 1024);
-    for (let i = 0; i < count; i++) {
-      const entry = offset + 2 + i * 12; if (entry + 12 > bytes.length) break;
-      const tag = view.getUint16(entry, little), type = view.getUint16(entry + 2, little), units = view.getUint32(entry + 4, little);
-      if (tag === 34665) { readIFD(view.getUint32(entry + 8, little), depth + 1); continue; }
-      if (![270, 305, 37510, 40092].includes(tag)) continue;
-      const size = units * ({ 1: 1, 2: 1, 3: 2, 4: 4, 7: 1 }[type] || 0);
-      const start = size <= 4 ? entry + 8 : view.getUint32(entry + 8, little);
-      if (!size || size > 2 * 1024 * 1024 || start + size > bytes.length) continue;
-      let data = bytes.subarray(start, start + size), encoding = 'utf-8';
-      if (tag === 37510 && data.length >= 8) {
-        const prefix = decodeText(data.subarray(0, 8)); data = data.subarray(8);
-        if (prefix.startsWith('UNICODE')) encoding = little ? 'utf-16le' : 'utf-16be';
-      }
-      if (tag === 40092) encoding = 'utf-16le';
-      const value = new TextDecoder(encoding).decode(data).replace(/\0+$/, '');
-      text[tag === 305 ? 'Software' : tag === 270 ? 'Description' : 'Comment'] = value;
-    }
-  };
-  readIFD(view.getUint32(4, little), 0);
-}
-function readXmpText(bytes, text) {
-  if (bytes.length > 2 * 1024 * 1024) return;
-  const xml = decodeText(bytes), start = xml.indexOf('<'); if (start < 0) return;
-  const doc = new DOMParser().parseFromString(xml.slice(start), 'application/xml');
-  for (const node of doc.getElementsByTagName('*')) {
-    if (['UserComment', 'Comment', 'Description', 'description'].includes(node.localName) && node.textContent.trim()) text[node.localName === 'description' ? 'Description' : node.localName] = node.textContent.trim();
-  }
-}
-async function readStealthMetadata(source) {
-  if (source.width * source.height > 32 * 1024 * 1024) throw new Error('图片超过 3200 万像素，已跳过像素级隐写读取');
-  const canvas = document.createElement('canvas'); canvas.width = source.width; canvas.height = source.height;
-  const context = canvas.getContext('2d', { willReadFrequently: true }); context.drawImage(source, 0, 0);
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-  const capacity = canvas.width * canvas.height;
-  let cursor = 0;
-  const read = count => {
-    if (cursor + count * 8 > capacity) throw new Error('隐写信息不完整');
-    const bytes = new Uint8Array(count);
-    for (let i = 0; i < count; i++) for (let bit = 0; bit < 8; bit++, cursor++) {
-      const pixel = (cursor % canvas.height) * canvas.width + Math.floor(cursor / canvas.height);
-      bytes[i] = (bytes[i] << 1) | (pixels[pixel * 4 + 3] & 1);
-    }
-    return bytes;
-  };
-  if (capacity < 152) return null;
-  const signature = decodeText(read(15));
-  if (!['stealth_pngcomp', 'stealth_pnginfo'].includes(signature)) return null;
-  const bitLength = new DataView(read(4).buffer).getUint32(0);
-  if (bitLength % 8 || bitLength / 8 > 2 * 1024 * 1024) throw new Error('隐写信息长度无效或过大');
-  const bytes = read(bitLength / 8);
-  if (signature === 'stealth_pnginfo') return JSON.parse(decodeText(bytes));
-  if (typeof DecompressionStream === 'undefined') throw new Error('此浏览器不支持解压隐写信息，请使用新版浏览器');
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return JSON.parse(decodeText(new Uint8Array(await readLimitedResponse(new Response(stream), 2 * 1024 * 1024))));
-}
-async function readImageMetadata(file) {
-  if (file.size > MAX_IMAGE_BYTES) throw new Error('图片超过 64 MB');
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const png = bytes.length >= 8 && [137,80,78,71,13,10,26,10].every((v, i) => bytes[i] === v);
-  const webp = decodeText(bytes.subarray(0, 4)) === 'RIFF' && decodeText(bytes.subarray(8, 12)) === 'WEBP';
-  const jpeg = bytes[0] === 255 && bytes[1] === 216;
-  if (!png && !webp && !jpeg) throw new Error('请选择 PNG、WebP 或 JPEG 图片');
-  const metadata = png ? await parsePNG(file) : { text: Object.create(null), width: 0, height: 0 };
-  if (webp) {
-    const view = new DataView(bytes.buffer);
-    for (let offset = 12; offset + 8 <= bytes.length;) {
-      const type = decodeText(bytes.subarray(offset, offset + 4)), length = view.getUint32(offset + 4, true);
-      if (offset + 8 + length > bytes.length) throw new Error('WebP 文件不完整');
-      const chunk = bytes.subarray(offset + 8, offset + 8 + length);
-      if (type === 'EXIF') readExifText(chunk, metadata.text);
-      if (type === 'XMP ') readXmpText(chunk, metadata.text);
-      offset += 8 + length + (length % 2);
-    }
-  }
-  if (jpeg) {
-    const view = new DataView(bytes.buffer);
-    for (let offset = 2; offset + 4 <= bytes.length;) {
-      if (bytes[offset] !== 255) break;
-      const marker = bytes[offset + 1]; if (marker === 218 || marker === 217) break;
-      if (marker === 255) { offset++; continue; }
-      if (marker === 1 || marker >= 208 && marker <= 215) { offset += 2; continue; }
-      const length = view.getUint16(offset + 2); if (length < 2 || offset + 2 + length > bytes.length) throw new Error('JPEG 文件不完整');
-      const chunk = bytes.subarray(offset + 4, offset + 2 + length);
-      if (marker === 225) { if (decodeText(chunk.subarray(0, 4)) === 'Exif') readExifText(chunk, metadata.text); else readXmpText(chunk, metadata.text); }
-      if (marker === 254 && chunk.length < 2 * 1024 * 1024) metadata.text.Comment = decodeText(chunk);
-      offset += length + 2;
-    }
-  }
-  const source = await imageSourceFromBlob(file);
-  try {
-    metadata.width ||= source.width; metadata.height ||= source.height;
-    const parsed = flattenImageMetadata(metadata.text);
-    if ((png || webp) && !metadataText(parsed.prompt, parsed.input, parsed.v4_prompt?.caption?.base_caption, metadata.text.Description)) {
-      try {
-        const hidden = await readStealthMetadata(source);
-        if (hidden && typeof hidden === 'object') metadata.text.Stealth = JSON.stringify(hidden);
-      } catch (error) { metadata.text.ReadWarning = error.message; }
-    }
-  } finally { source.close?.(); }
-  return metadata;
-}
-
-/* Install controls synchronously: the main program opens its database asynchronously. */
+/* Install shared UI controls before the final boot script starts the database. */
 (() => {
   const modelField = document.createElement('div'); modelField.className = 'field';
   modelField.innerHTML = '<label for="recipeModel">适用模型</label><select id="recipeModel"><option value="">跟随创作台当前模型</option></select>';
@@ -325,6 +304,7 @@ async function readImageMetadata(file) {
   $('imageImportFile').accept = 'image/png,image/webp,image/jpeg,.png,.webp,.jpg,.jpeg';
 })();
 async function initWorkbenchFeatures() {
+  const orderStatus = document.createElement('p'); orderStatus.id = 'collectionOrderStatus'; orderStatus.className = 'sr-only'; orderStatus.setAttribute('role', 'status'); document.body.append(orderStatus);
   const moveDialog = document.createElement('dialog'); moveDialog.id = 'collectionMoveDialog'; moveDialog.className = 'dialog compact-dialog';
   moveDialog.innerHTML = '<form class="dialog-inner" id="collectionMoveForm"><div class="dialog-head"><h2>移动到文件夹</h2><button class="icon-btn" type="button" data-close-dialog="collectionMoveDialog" aria-label="关闭">×</button></div><div class="field"><label for="collectionMoveTarget">目标文件夹</label><select id="collectionMoveTarget"></select></div><div class="dialog-actions"><button class="secondary" type="button" data-close-dialog="collectionMoveDialog">取消</button><button class="primary" type="submit">移动</button></div></form>';
   document.body.append(moveDialog);
