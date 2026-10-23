@@ -32,6 +32,7 @@ let originalSeed = '';
 let pickerTargetId = '';
 let pickerItems = [];
 let pickerCharacterSelection = new Set();
+let pickerExistingCharacterIds = new Set();
 let expandedWordId = '';
 let pendingBackupImport = null;
 let artworkSelectionMode = false;
@@ -1605,7 +1606,7 @@ function reuseArtwork(item) {
 
 function updatePickerCharacterCount() {
   const count = pickerCharacterSelection.size;
-  $('pickerSelectedCount').textContent = count ? `已选择 ${count} 个人物` : '尚未选择人物';
+  $('pickerSelectedCount').textContent = count ? `本次已选 ${count} 个新人物` : '请选择新人物';
   $('replaceCharactersBtn').disabled = !count;
   $('appendCharactersBtn').disabled = !count;
 }
@@ -1614,8 +1615,9 @@ function renderPickerList() {
   const query = $('pickerSearch').value.trim().toLowerCase();
   const list = sortPickerItems(pickerItems.filter(item => !query || item.search.includes(query)));
   if (pickerKind === 'character') {
-    $('pickerList').innerHTML = list.length ? list.map(item => `<label class="picker-check"><input type="checkbox" value="${escapeHTML(item.id)}"${pickerCharacterSelection.has(item.id) ? ' checked' : ''}><span><b>${escapeHTML(item.name)}</b><span>${escapeHTML(item.value)}</span>${item.favorite ? '<span class="picker-badge">已收藏</span>' : ''}</span></label>`).join('') : '<div class="empty"><div><b>没有匹配的人物</b><span>试试人物名称、标签或描述中的关键词。</span></div></div>';
+    $('pickerList').innerHTML = list.length ? list.map(item => `<label class="picker-check"><input type="checkbox" value="${escapeHTML(item.id)}"${pickerExistingCharacterIds.has(item.id) ? ' checked disabled' : pickerCharacterSelection.has(item.id) ? ' checked' : ''}><span><b>${escapeHTML(item.name)}</b><span>${escapeHTML(item.value)}</span>${pickerExistingCharacterIds.has(item.id) ? '<span class="picker-badge">当前使用</span>' : ''}${item.favorite ? '<span class="picker-badge">已收藏</span>' : ''}</span></label>`).join('') : '<div class="empty"><div><b>没有匹配的人物</b><span>试试人物名称、标签或描述中的关键词。</span></div></div>';
     $('pickerList').querySelectorAll('input').forEach(input => input.onchange = () => {
+      if (input.disabled) return;
       if (input.checked) pickerCharacterSelection.add(input.value);
       else pickerCharacterSelection.delete(input.value);
       updatePickerCharacterCount();
@@ -1646,7 +1648,8 @@ function renderPickerList() {
 }
 
 function applyPickedCharacters(mode) {
-  const pickedIds = [...pickerCharacterSelection];
+  const availableIds = new Set(pickerItems.map(item => String(item.id)));
+  const pickedIds = [...pickerCharacterSelection].filter(id => !pickerExistingCharacterIds.has(id) && availableIds.has(id));
   if (!pickedIds.length) return;
   for (const id of pickedIds) recordLibraryUse('characters', id);
   const target = $(pickerTargetId);
@@ -1676,10 +1679,11 @@ function openPicker(kind, targetId = `${kind}Prompt`) {
   $('pickerSearch').value = '';
   const fieldName = { scene: '画面描述词', clothing: '服装', character: '人物提示词', artist: '画师串', positive: '正面词', negative: '负面词' }[kind];
   $('pickerTitle').textContent = `选择${fieldName}`;
-  $('pickerHelp').textContent = kind === 'character' ? '可以同时勾选多个人物；切换搜索词不会丢失勾选。' : '收藏内容优先显示；“替换”会清空当前字段，“追加”会接在后面。';
+  $('pickerHelp').textContent = kind === 'character' ? '当前使用的人物已勾选并锁定，不计入本次选择。另选人物后，可替换当前人物或追加；搜索和排序会保留新选择。' : '收藏内容优先显示；“替换”会清空当前字段，“追加”会接在后面。';
   $('pickerMultiActions').hidden = kind !== 'character';
   if (kind === 'character') {
-    pickerCharacterSelection = new Set(selectedCharacterIds());
+    pickerExistingCharacterIds = new Set(selectedCharacterIds());
+    pickerCharacterSelection = new Set();
     pickerItems = characters().filter(character => characterPrompt(character)).map(character => ({
       ...pickerRecordInfo(character, 'characters'),
       id: character.id, name: character.name, value: characterPrompt(character), favorite: Boolean(character.favorite),
