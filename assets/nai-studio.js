@@ -28,6 +28,7 @@ let latestArtwork = null;
 let galleryUrls = [];
 let libraryUrls = [];
 let pickerKind = '';
+const pickerViewStates = {};
 let originalSeed = '';
 let pickerTargetId = '';
 let pickerItems = [];
@@ -151,7 +152,10 @@ function showDialog(id) {
 
 function closeDialog(id) {
   const dialog = $(id);
-  if (dialog?.open) dialog.close();
+  if (dialog?.open) {
+    if (id === 'pickerDialog') rememberPickerView();
+    dialog.close();
+  }
 }
 
 document.querySelectorAll('[data-close-dialog]').forEach(button => {
@@ -1160,9 +1164,12 @@ function renderRecipes() {
   releaseGalleryUrls();
   const query = $('gallerySearch').value.trim().toLowerCase();
   const views = sortRecipeViews(recipeViews());
-  const matchingArtworks = query ? artworksCache.filter(item => artworkSearchText(item).includes(query)) : [];
+  const authors = new Set(recipesCache.map(recipe => String(recipe.author || '').trim().toLowerCase()).filter(Boolean));
+  const matchingAuthors = new Set([...authors].filter(author => authors.has(query) ? author === query : query && author.includes(query)));
+  const authorSearch = matchingAuthors.size > 0;
+  const matchingArtworks = query && !authorSearch ? artworksCache.filter(item => artworkSearchText(item).includes(query)) : [];
   const matchingRecipeIds = new Set(matchingArtworks.map(item => item.recipeId || '__uncategorized__'));
-  let list = views.filter(recipe => !query || matchingRecipeIds.has(recipe.id) || [
+  let list = views.filter(recipe => authorSearch ? matchingAuthors.has(String(recipe.author || '').trim().toLowerCase()) : !query || matchingRecipeIds.has(recipe.id) || [
     recipe.name, recipe.artistPrompt, recipe.positivePrompt, recipe.negativePrompt,
     recipe.author, recipe.note, recipe.sourceUrl, ...(recipe.tags || [])
   ].join(' ').toLowerCase().includes(query));
@@ -1672,11 +1679,27 @@ function applyPickedCharacters(mode) {
   toast(`${pickedIds.length} 个人物已${mode === 'append' ? '追加' : '放入'}创作台`);
 }
 
+function rememberPickerView() {
+  const state = {
+    search: $('pickerSearch').value,
+    scrollTop: $('pickerList').scrollTop,
+    dialogScrollTop: $('pickerDialog').scrollTop
+  };
+  pickerViewStates[pickerKind] = state;
+  try { localStorage.setItem(`nai_picker_view_${pickerKind}`, JSON.stringify(state)); } catch { /* Browsing can continue without persistent preferences. */ }
+}
+$('pickerDialog').addEventListener('cancel', rememberPickerView);
+
 function openPicker(kind, targetId = `${kind}Prompt`) {
+  if ($('pickerDialog').open) rememberPickerView();
+  if (!pickerViewStates[kind]) {
+    try { pickerViewStates[kind] = JSON.parse(localStorage.getItem(`nai_picker_view_${kind}`)); } catch { /* Ignore invalid browsing preferences. */ }
+  }
+  const viewState = pickerViewStates[kind] || {};
   pickerKind = kind;
   $('pickerSort').value = localStorage.getItem(`nai_picker_sort_${kind}`) || 'favorite';
   pickerTargetId = targetId;
-  $('pickerSearch').value = '';
+  $('pickerSearch').value = typeof viewState.search === 'string' ? viewState.search : '';
   const fieldName = { scene: '画面描述词', clothing: '服装', character: '人物提示词', artist: '画师串', positive: '正面词', negative: '负面词' }[kind];
   $('pickerTitle').textContent = `选择${fieldName}`;
   $('pickerHelp').textContent = kind === 'character' ? '当前使用的人物已勾选并锁定，不计入本次选择。另选人物后，可替换当前人物或追加；搜索和排序会保留新选择。' : '收藏内容优先显示；“替换”会清空当前字段，“追加”会接在后面。';
@@ -1706,7 +1729,12 @@ function openPicker(kind, targetId = `${kind}Prompt`) {
   $('replaceCharactersBtn').onclick = () => applyPickedCharacters('replace');
   $('appendCharactersBtn').onclick = () => applyPickedCharacters('append');
   showDialog('pickerDialog');
-  setTimeout(() => $('pickerSearch').focus(), 50);
+  requestAnimationFrame(() => {
+    if (pickerKind !== kind || !$('pickerDialog').open) return;
+    $('pickerSearch').focus({ preventScroll: true });
+    $('pickerList').scrollTop = Number.isFinite(viewState.scrollTop) ? viewState.scrollTop : 0;
+    $('pickerDialog').scrollTop = Number.isFinite(viewState.dialogScrollTop) ? viewState.dialogScrollTop : 0;
+  });
 }
 
 $('pickerSearch').addEventListener('input', renderPickerList);
