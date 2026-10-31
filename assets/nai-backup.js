@@ -58,8 +58,8 @@ async function backupSelection(scope = 'all', startDate = '', endDate = '', sele
   if (!types.size) throw new Error('请至少选择一类要备份的数据');
   const allArtworks = await dbAll('artworks');
   const allRecipes = await dbAll('recipes');
-  const allWords = words();
-  const allCharacters = characters();
+  const allWords = types.has('words') ? words() : [];
+  const allCharacters = types.has('characters') ? characters() : [];
   const allVibes = types.has('vibes') ? await dbAll('vibes') : [];
   const collections = (await dbAll('collections')).filter(item => types.has(item.libraryType));
   if (scope !== 'range') {
@@ -74,14 +74,15 @@ async function backupSelection(scope = 'all', startDate = '', endDate = '', sele
   const bounds = dateBounds(startDate, endDate);
   const selectedArtworks = types.has('artworks') ? allArtworks.filter(item => itemInDateRange(item, bounds)) : [];
   const linkedRecipeIds = new Set(selectedArtworks.map(item => String(item.recipeId || '')).filter(Boolean));
+  const selectedRecipes = types.has('recipes') ? allRecipes.filter(item => itemInDateRange(item, bounds) || linkedRecipeIds.has(String(item.id))) : [];
   const linkedCharacterIds = new Set(selectedArtworks.flatMap(artworkCharacterIds));
   const linkedWordIds = new Set(selectedArtworks.flatMap(item => (Array.isArray(item.wordSources) ? item.wordSources : []).filter(Boolean).map(source => String(source.wordId || ''))));
   const linkedVibeIds = new Set(selectedArtworks.flatMap(item => (item.vibes || []).map(entry => entry.id)));
-  for (const recipe of allRecipes.filter(item => linkedRecipeIds.has(String(item.id)))) for (const item of recipe.defaultParams?.vibes || []) linkedVibeIds.add(item.id);
+  for (const recipe of allRecipes.filter(item => linkedRecipeIds.has(String(item.id)) || selectedRecipes.includes(item))) for (const item of recipe.defaultParams?.vibes || []) linkedVibeIds.add(item.id);
   for (const mix of allVibes.filter(item => item.type === 'bundle' && itemInDateRange(item,bounds))) for (const item of mix.items) linkedVibeIds.add(item.id);
   return {
     artworks: selectedArtworks,
-    recipes: types.has('recipes') ? allRecipes.filter(item => itemInDateRange(item, bounds) || linkedRecipeIds.has(String(item.id))) : [],
+    recipes: selectedRecipes,
     words: types.has('words') ? allWords.filter(item => itemInDateRange(item, bounds) || linkedWordIds.has(String(item.id))) : [],
     characters: types.has('characters') ? allCharacters.filter(item => itemInDateRange(item, bounds) || linkedCharacterIds.has(String(item.id))) : [],
     vibes: allVibes.filter(item => itemInDateRange(item,bounds) || linkedVibeIds.has(item.id)), collections
@@ -156,11 +157,11 @@ $('backupForm').onsubmit = async event => {
     const packedCharacters = selected.characters.map(item => withTransferId(item, 'character', sourceDeviceId));
     if (packedWords.some((item, index) => item.transferId !== selected.words[index]?.transferId)) {
       const identities = new Map(packedWords.map(item => [String(item.id), item.transferId]));
-      localStorage.setItem(WORDS_KEY, JSON.stringify(words().map(item => identities.has(String(item.id)) ? { ...item, transferId: identities.get(String(item.id)) } : item)));
+      writeLocalLibrary(WORDS_KEY, 'word', words().map(item => identities.has(String(item.id)) ? { ...item, transferId: identities.get(String(item.id)) } : item));
     }
     if (packedCharacters.some((item, index) => item.transferId !== selected.characters[index]?.transferId)) {
       const identities = new Map(packedCharacters.map(item => [String(item.id), item.transferId]));
-      localStorage.setItem(CHARACTERS_KEY, JSON.stringify(characters().map(item => identities.has(String(item.id)) ? { ...item, transferId: identities.get(String(item.id)) } : item)));
+      writeLocalLibrary(CHARACTERS_KEY, 'character', characters().map(item => identities.has(String(item.id)) ? { ...item, transferId: identities.get(String(item.id)) } : item));
     }
     const payload = {
       app: 'NAI 镜头台', version: 9, exportedAt: new Date().toISOString(),
@@ -417,10 +418,13 @@ async function restoreBackupData(data, suppliedPlan = null) {
     return existing.map(item => map.get(String(item.id)) || item);
   };
   localWritten = true;
-  if (plan.characterPlan.additions.length || plan.characterPlan.merges.length) localStorage.setItem(CHARACTERS_KEY, JSON.stringify([...plan.characterPlan.additions, ...replaceMerged(existingCharacters, plan.characterPlan.merges)]));
-  if (plan.wordPlan.additions.length || plan.wordPlan.merges.length) localStorage.setItem(WORDS_KEY, JSON.stringify([...plan.wordPlan.additions, ...replaceMerged(existingWords, plan.wordPlan.merges)]));
+  if (plan.characterPlan.additions.length || plan.characterPlan.merges.length) writeLocalLibrary(CHARACTERS_KEY, 'character', [...plan.characterPlan.additions, ...replaceMerged(existingCharacters, plan.characterPlan.merges)]);
+  if (plan.wordPlan.additions.length || plan.wordPlan.merges.length) writeLocalLibrary(WORDS_KEY, 'word', [...plan.wordPlan.additions, ...replaceMerged(existingWords, plan.wordPlan.merges)]);
   if (characters().length < existingCharacters.length + plan.characterPlan.additions.length) throw new Error('人物库写入没有完成，请检查浏览器存储空间');
   if (words().length < existingWords.length + plan.wordPlan.additions.length) throw new Error('散词库写入没有完成，请检查浏览器存储空间');
+  await withArtworkStorage(async () => {
+  const artworkAdditions = await Promise.all(plan.artworkPlan.additions.map(artworkForStorage));
+  const artworkMerges = await Promise.all(plan.artworkPlan.merges.map(artworkForStorage));
   await new Promise((resolve, reject) => {
   const transaction = db.transaction(['artworks', 'recipes', 'vibes', 'collections'], 'readwrite');
   transaction.oncomplete = resolve;
@@ -442,10 +446,10 @@ async function restoreBackupData(data, suppliedPlan = null) {
   try {
   for (const record of [...plan.collectionPlan.additions, ...plan.collectionPlan.merges]) transaction.objectStore('collections').put(record);
   for (const record of plan.vibeRecords || []) transaction.objectStore('vibes').put(record);
-  for (const record of plan.artworkPlan.merges) artworks.put(record);
-  let remaining = plan.artworkPlan.additions.length;
+  for (const record of artworkMerges) artworks.put(record);
+  let remaining = artworkAdditions.length;
   if (!remaining) writeRecipes();
-  for (const artwork of plan.artworkPlan.additions) {
+  for (const artwork of artworkAdditions) {
     const record = { ...artwork };
     delete record.id;
     delete record._oldIds;
@@ -458,6 +462,7 @@ async function restoreBackupData(data, suppliedPlan = null) {
     };
   }
   } catch (error) { transaction.abort(); reject(error); }
+  });
   });
   localWritten = false;
   await refreshCollections();

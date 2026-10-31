@@ -2,15 +2,15 @@
 /* Start only after every classic-script module and UI adapter has been loaded. */
 
 (async () => {
-  applyTheme(document.documentElement.dataset.theme || 'studio');
-  NaiAdapters.init({ onChange: saveSettings, getPresets: apiPresets });
-  renderApiPresets();
-  loadSettings();
-  updateWordForm();
-  switchView('create');
-  renderWords();
-  renderCharacters();
   try {
+    applyTheme(document.documentElement.dataset.theme || 'studio');
+    NaiAdapters.init({ onChange: saveSettings, getPresets: apiPresets });
+    renderApiPresets();
+    loadSettings();
+    updateWordForm();
+    switchView('create');
+    renderWords();
+    renderCharacters();
     document.documentElement.dataset.stage = 'opening-db';
     await openDB();
     await initVibes();

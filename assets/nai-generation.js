@@ -132,8 +132,8 @@ async function parseImageResponse(response, mode, adapter = null) {
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   if (contentType.includes('json')) {
     const data = JSON.parse(new TextDecoder().decode(await readLimitedResponse(response, MAX_IMAGE_BYTES * 1.4)));
-    const item = data?.data?.[0] || data;
-    if (item?.b64_json) return validateGeneratedImage(await b64Blob(item.b64_json));
+    const item = data?.images?.[0] || data?.data?.[0] || data;
+    if (item?.b64_json || (mode === 'official' && item?.image)) return validateGeneratedImage(await b64Blob(item.b64_json || item.image));
     if (item?.url) return downloadGeneratedImage(item.url);
     throw new Error(data?.message || data?.error?.message || '返回中没有图片数据');
   }
@@ -317,7 +317,7 @@ $('generateBtn').onclick = async () => {
     toast('图片与当次完整参数已保存');
   } catch (error) {
     if (generatedBlob) {
-      setStatus(savedArtworkId ? '图片已保存，配方更新未完成' : '图片已生成，但归档失败', 'err', `请先下载当前图片，不要重复生成。${error.message}`);
+      setStatus(savedArtworkId ? '图片已保存，配方更新未完成' : '图片已生成，但归档失败', 'err', `请先下载当前图片，不要重复生成。若正在使用无痕浏览，请保存原图后改用普通模式。${error.message}`);
       if (savedArtworkId) await refreshData().catch(() => {});
       return;
     }
@@ -325,8 +325,11 @@ $('generateBtn').onclick = async () => {
       setStatus(timedOut ? '等待超时' : '已停止等待', 'err', '服务端可能仍在生成或扣费，请先检查服务商记录，不要立即重复提交。');
       return;
     }
-    const cors = /Failed to fetch|NetworkError/i.test(error.message);
-    setStatus('生成失败', 'err', cors ? '请求未完成，可能是网络、跨域、证书或地址问题。使用适配文件时请填写不需重定向的最终接口地址。服务端可能已处理，请先检查记录，避免重复生成。' : error.message);
+    const networkError = /Failed to fetch|NetworkError|Load failed/i.test(error.message);
+    const localOfficial = networkError && $('apiMode').value === 'official' && ['file:', 'edge:'].includes(location.protocol);
+    setStatus('生成失败', 'err', localOfficial
+      ? '当前从手机本地文件打开，浏览器可能阻断官方接口请求。请用 HTTPS 在线版打开镜头台并重新填写 Token；两处档案不会自动同步，先备份再迁移。若在线版也失败，请检查网络或跨域设置。服务端可能已处理，请先核对记录，避免重复生成。'
+      : networkError ? '请求未完成，可能是网络、跨域、证书或地址问题。使用适配文件时请填写不需重定向的最终接口地址。服务端可能已处理，请先检查记录，避免重复生成。' : error.message);
   } finally {
     clearTimeout(timeout);
     generationController = null;

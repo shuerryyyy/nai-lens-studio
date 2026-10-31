@@ -97,12 +97,14 @@ $('imageImportForm').onsubmit = async event => {
     category: recipe?.name || '未分类', tags: [], blob: importing.file,
     imported: true, importedAt: Date.now(), createdAt: Date.now(), rawMetadata: metadata.raw || {}
   };
+  await withArtworkStorage(async () => {
+  const storedArtwork = await artworkForStorage(artwork);
   await new Promise((resolve, reject) => {
     const tx = db.transaction(['artworks', 'recipes'], 'readwrite');
     let failure;
     tx.oncomplete = resolve; tx.onabort = () => reject(failure || tx.error || new Error('导入失败，本次图片与配方写入已撤销')); tx.onerror = () => {};
     try {
-      const request = tx.objectStore('artworks').add(artwork);
+      const request = tx.objectStore('artworks').add(storedArtwork);
       request.onsuccess = () => {
         try {
           if (!recipe) return;
@@ -120,6 +122,7 @@ $('imageImportForm').onsubmit = async event => {
         } catch (error) { failure = error; tx.abort(); }
       };
     } catch (error) { failure = error; tx.abort(); }
+  });
   });
   saved = true;
   if (pendingImport === importing) { closeDialog('imageImportDialog'); pendingImport = null; }

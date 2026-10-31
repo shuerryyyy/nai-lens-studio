@@ -467,7 +467,7 @@ function characters() {
 }
 
 function saveCharacters(list) {
-  localStorage.setItem(CHARACTERS_KEY, JSON.stringify(list));
+  writeLocalLibrary(CHARACTERS_KEY, 'character', list);
   renderCharacters();
   updateActiveCharacterLabel();
   renderImageLibrary();
@@ -635,7 +635,7 @@ function words() {
 }
 
 function saveWords(list) {
-  localStorage.setItem(WORDS_KEY, JSON.stringify(list));
+  writeLocalLibrary(WORDS_KEY, 'word', list);
   renderWords();
 }
 
@@ -672,11 +672,7 @@ async function migrateLegacyData() {
       tags: source.tags || [], coverArtworkId: source.id, createdAt: Date.now(), updatedAt: Date.now(),
       manualOrder: -(source.createdAt || Date.now()), defaultParams: pickParams(source), migratedFrom: 'category'
     };
-    await dbAdd('recipes', recipe);
-    for (const artwork of items) {
-      artwork.recipeId = recipe.id;
-      await dbPut('artworks', artwork);
-    }
+    await commitRecords({ recipes: [recipe], artworks: items.map(artwork => ({ ...artwork, recipeId: recipe.id })) });
   }
   const existingRecipes = await dbAll('recipes');
   for (const word of words().filter(item => item.kind === 'bundle')) {
@@ -792,6 +788,7 @@ function openRecipeEditor(recipe = null, prefillCurrent = false) {
   $('recipeNote').value = recipe?.note || '';
   $('recipeSourceUrl').value = recipe?.sourceUrl || '';
   $('recipeSteps').value = Number(params.steps) || 28;
+  $('recipeScale').value = params.scale ?? '';
   $('recipeModel').value = params.model || '';
   $('recipeSampler').value = params.sampler || 'k_euler_ancestral';
   showDialog('recipeDialog');
@@ -806,6 +803,7 @@ $('recipeForm').onsubmit = async event => {
   event.preventDefault();
   const submit = $('recipeForm').querySelector('[type="submit"]');
   if (submit.disabled) return;
+  if (!$('recipeScale').checkValidity()) { $('recipeScale').reportValidity(); return; }
   submit.disabled = true;
   let saved = false;
   try {
@@ -829,6 +827,7 @@ $('recipeForm').onsubmit = async event => {
     defaultParams: {
       ...(old?.defaultParams || pickParams(collectMeta())),
       model: $('recipeModel').value || undefined,
+      scale: $('recipeScale').value.trim() === '' ? undefined : Number($('recipeScale').value),
       steps: Number($('recipeSteps').value) || 28,
       sampler: $('recipeSampler').value
     }
@@ -1118,7 +1117,7 @@ async function saveBatchAuthors(type, ids, author) {
       return { ...item, author, updatedAt };
     });
     if (!count) throw new Error('选中的词条已不存在，请重新选择');
-    localStorage.setItem(WORDS_KEY, JSON.stringify(list));
+    writeLocalLibrary(WORDS_KEY, 'word', list);
     renderWords();
   } else {
     await new Promise((resolve, reject) => {

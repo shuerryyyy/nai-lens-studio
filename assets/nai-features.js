@@ -57,17 +57,20 @@ async function removeCollection(folderId) {
   try {
     if (localKey) {
       const updates = new Map(changed.map(item => [item.id, item]));
-      localStorage.setItem(localKey, JSON.stringify(records.map(item => updates.get(item.id) || item)));
+      writeLocalLibrary(localKey, type === 'words' ? 'word' : 'character', records.map(item => updates.get(item.id) || item));
     }
+    await withArtworkStorage(async () => {
+    const stored = type === 'artworks' ? await Promise.all(changed.map(artworkForStorage)) : changed;
     await new Promise((resolve, reject) => {
       const tx = db.transaction(localKey ? ['collections'] : ['collections', type], 'readwrite');
       tx.oncomplete = resolve;
       tx.onabort = () => reject(tx.error || new Error('文件夹删除失败，内容已保留'));
       tx.onerror = () => {};
       try {
-        if (!localKey) for (const item of changed) tx.objectStore(type).put(item);
+        if (!localKey) for (const item of stored) tx.objectStore(type).put(item);
         tx.objectStore('collections').delete(folderId);
       } catch (error) { tx.abort(); reject(error); }
+    });
     });
   } catch (error) {
     if (localKey) previous === null ? localStorage.removeItem(localKey) : localStorage.setItem(localKey, previous);
@@ -277,7 +280,7 @@ async function recordLibraryUse(type, id) {
       const record = list.find(item => String(item.id) === String(id));
       if (!record) return;
       record.lastUsedAt = Date.now();
-      localStorage.setItem(type === 'characters' ? CHARACTERS_KEY : WORDS_KEY, JSON.stringify(list));
+      writeLocalLibrary(type === 'characters' ? CHARACTERS_KEY : WORDS_KEY, type === 'characters' ? 'character' : 'word', list);
     } else if (type === 'recipes') {
       const record = await dbGet('recipes', String(id));
       if (!record) return;
