@@ -18,7 +18,7 @@
 
 ### 下载单文件版
 
-[下载 v2.26 单文件版](download/nai-lens-studio-v2.26-standalone.html)
+[下载 v2.26.1 单文件版](download/nai-lens-studio-v2.26.1-standalone.html)
 
 下载后直接用浏览器打开即可。单文件版已经内嵌主程序、ZIP 解析组件和标题字体，适合保存到电脑或发送到手机使用。
 
