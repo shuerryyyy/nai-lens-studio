@@ -32,6 +32,8 @@
     ['[data-vibe-favorite]','star','收藏'],
     ['[data-vibe-mix]','arrow-right','使用组合'],
     ['[data-batch-all]','square-check-big','全选或取消全选'],
+    ['[data-batch-share]','image-down','下载 JPG 分享版'],
+    ['[data-word-batch-delete]','trash','删除所选词条'],
     ['[data-batch-favorite]','star','收藏或取消收藏'],
     ['[data-batch-tag]','tag','添加标签'],
     ['[data-batch-move]','folder-input','更换关联配方'],

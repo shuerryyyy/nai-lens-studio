@@ -1,4 +1,4 @@
-cbdc90b2193539e817e388912effac7899cee77a4a15c8622104ffc1e7f77cc8  assets/flat-controls.js
+c0038cc1c748becb7e0324d62c565dc4f593c2330b6681ebe0efe55f892a73fb  assets/flat-controls.js
 b965ee06ec2cfaa447a06d96bc334da86ce341b8db20aeb36a3f9ff895cdf37b  assets/flat-ui.css
 acc7e41455a80765b5fd9c7ee1b8078a6d160bbbca455aeae854de65c947d59e  assets/jszip.min.js
 3cb9698ea8b40eba4b52fd1b365880b5aae8716b052f660c1f0d7301cbfeb813  assets/nai-adapters.js
@@ -10,7 +10,7 @@ de1213c21954f6e2c44bebf25a0daf8b7010e8db5aee8f8f8e8cd6d725254d6f  assets/nai-fea
 31bea06b66d2fa95d3fc44b591f5d9a426398e781fe93c8e3bd717b545480699  assets/nai-image-import.js
 6a86491dcaf12f47ca2f38ebb0f393998c3d79e3931c3b83cbe0b3299f1458fc  assets/nai-image-metadata.js
 b4101dea1eb2d9ef4807cf0ff8bb34e849ba8657a2d1baea54680888550b459a  assets/nai-storage.js
-4098e685ca03b680550d1297d7655e0755fdc9959509924cafb33f9083667428  assets/nai-studio.js
+628115ad20e7c86a72d5bb280c53fe233e8e575781262680b85cb5cc22eec749  assets/nai-studio.js
 3d29c2d614b4e682eab7800b9cb9298d2668005dcb5f0cd1259c9ba72dc25e66  assets/nai-title.ttf
 718542de7c587af9ad27f9f0bebdc5c75a932638c8d2f367d9eae37371d2cb7a  assets/nai-vibes.js
 f8a9d881ebf03323d448085935ac8bb160ca091198a8a5f82ae490d412b88617  download/nai-lens-studio-v2.10-standalone.html
@@ -29,3 +29,4 @@ c5239b3247575c780aae14347e6d6bd35dd7d582a32073fd9a1a1e4c977e4763  download/nai-l
 5e4fc4ea81db81e024850762ebbfded6d32afe76f611268ba567016ec3f04115  download/nai-lens-studio-v2.23-standalone.html
 86f300e4adbc8ee2b085c10084fd8e0c24b9c1fbdf1fd43d2f809dd637685e9a  download/nai-lens-studio-v2.24-standalone.html
 2b9548668831741cb8df986cc2b7f66a30fb8233045a6667b2ee555326b67711  download/nai-lens-studio-v2.25-standalone.html
+a1d1b2bf8ea038b28a0a225979fa021f05d724869becc572397aae3b4b586f05  download/nai-lens-studio-v2.26-standalone.html

@@ -38,6 +38,7 @@ let expandedWordId = '';
 let pendingBackupImport = null;
 let artworkSelectionMode = false;
 let selectedArtworkIds = new Set();
+let batchShareDownloading = false;
 let batchMoveActive = false;
 let imagePreviewUrl = '';
 let importPreviewUrl = '';
@@ -988,7 +989,7 @@ function batchBarHTML(visibleIds = []) {
   if (!artworkSelectionMode) return '';
   const visible = visibleIds.map(String);
   const visibleSelected = visible.filter(id => selectedArtworkIds.has(id)).length;
-  return `<div class="batch-bar"><span data-artwork-selection-count>已选择 ${selectedArtworkIds.size} 张</span><button class="secondary" data-batch-all type="button">${visible.length && visibleSelected === visible.length ? '取消全选' : '全选当前'}</button><button class="secondary" data-batch-favorite type="button">收藏 / 取消</button><button class="secondary" data-batch-tag type="button">加标签</button><button class="secondary" data-batch-move type="button">更换配方</button><button class="danger-btn" data-batch-delete type="button">删除</button><button class="secondary" data-batch-cancel type="button">退出多选</button></div>`;
+  return `<div class="batch-bar"><span data-artwork-selection-count>已选择 ${selectedArtworkIds.size} 张</span><button class="secondary" data-batch-all type="button">${visible.length && visibleSelected === visible.length ? '取消全选' : '全选当前'}</button><button class="secondary" data-batch-share type="button" ${batchShareDownloading ? 'disabled' : ''}>下载 JPG 分享版</button><button class="secondary" data-batch-favorite type="button">收藏 / 取消</button><button class="secondary" data-batch-tag type="button">加标签</button><button class="secondary" data-batch-move type="button">更换配方</button><button class="danger-btn" data-batch-delete type="button">删除</button><button class="secondary" data-batch-cancel type="button">退出多选</button></div>`;
 }
 
 function setArtworkSelectionMode(enabled) {
@@ -1037,6 +1038,7 @@ function bindBatchBar(root, visibleIds) {
     renderImageLibrary();
   };
   root.querySelector('[data-batch-favorite]')?.addEventListener('click', () => batchFavoriteArtworks().catch(error => toast(error.message)));
+  root.querySelector('[data-batch-share]')?.addEventListener('click', batchDownloadArtworkJpegs);
   root.querySelector('[data-batch-tag]')?.addEventListener('click', () => { $('batchTags').value = ''; showDialog('batchTagDialog'); });
   root.querySelector('[data-batch-move]')?.addEventListener('click', () => {
     if (!selectedArtworkIds.size) { toast('请先选择图片'); return; }
@@ -1086,13 +1088,26 @@ function renderAuthorSelection(type, visibleIds) {
   host.hidden = !state.active;
   if (!state.active) { host.replaceChildren(); return; }
   const ids = visibleIds.map(String), all = ids.length > 0 && ids.every(id => state.ids.has(id));
-  host.innerHTML = `<div class="batch-bar"><span role="status">已选择 ${state.ids.size} ${type === 'recipes' ? '份配方' : '个词条'}</span><button class="secondary" type="button" data-author-select-all ${ids.length ? '' : 'disabled'}>${all ? '取消全选当前' : '全选当前'}</button><button class="secondary" type="button" data-author-batch-edit ${state.ids.size ? '' : 'disabled'}>批量作者备注</button><button class="secondary" type="button" data-author-selection-cancel>退出多选</button></div>`;
+  host.innerHTML = `<div class="batch-bar"><span role="status">已选择 ${state.ids.size} ${type === 'recipes' ? '份配方' : '个词条'}</span><button class="secondary" type="button" data-author-select-all ${ids.length ? '' : 'disabled'}>${all ? '取消全选当前' : '全选当前'}</button><button class="secondary" type="button" data-author-batch-edit ${state.ids.size ? '' : 'disabled'}>批量作者备注</button>${type === 'words' ? `<button class="danger-btn" type="button" data-word-batch-delete ${state.ids.size ? '' : 'disabled'}>删除所选词条</button>` : ''}<button class="secondary" type="button" data-author-selection-cancel>退出多选</button></div>`;
   host.querySelector('[data-author-select-all]').onclick = () => {
     for (const id of ids) if (all) state.ids.delete(id); else state.ids.add(id);
     renderAuthorSelectionLibrary(type);
   };
   host.querySelector('[data-author-batch-edit]').onclick = () => openBatchAuthor(type);
+  host.querySelector('[data-word-batch-delete]')?.addEventListener('click', () => {
+    try { batchDeleteWords(); } catch (error) { toast(`删除失败：${error.message}`); }
+  });
   host.querySelector('[data-author-selection-cancel]').onclick = () => setAuthorSelectionMode(type, false);
+}
+
+function batchDeleteWords() {
+  const list = words(), ids = authorSelections.words.ids;
+  const count = list.filter(item => ids.has(String(item.id))).length;
+  if (!count) { toast('请先选择词条'); return; }
+  if (!confirm(`永久删除选中的 ${count} 个词条？此操作无法撤销。`)) return;
+  saveWords(list.filter(item => !ids.has(String(item.id))));
+  setAuthorSelectionMode('words', false);
+  toast(`已删除 ${count} 个词条`);
 }
 function openBatchAuthor(type) {
   const records = authorSelectionRecords(type).filter(item => authorSelections[type].ids.has(String(item.id)));
@@ -1588,6 +1603,29 @@ async function downloadArtworkJpeg(item, button) {
     toast(`JPG 转换失败：${error.message}`);
   } finally {
     if (button) button.disabled = false;
+  }
+}
+
+async function batchDownloadArtworkJpegs() {
+  if (batchShareDownloading) return;
+  const items = selectedArtworks();
+  if (!items.length) { toast('请先选择图片'); return; }
+  batchShareDownloading = true;
+  document.querySelectorAll('[data-batch-share]').forEach(button => { button.disabled = true; });
+  let count = 0;
+  try {
+    toast(`正在准备 ${items.length} 张 JPG 分享图`);
+    for (const item of items) {
+      const jpeg = await reencodeImageAsJpeg(item.blob);
+      triggerBlobDownload(jpeg, `NAI_${item.id}_${safeFilenamePart(item.model)}_分享版.jpg`);
+      count++;
+    }
+    toast(`已发起 ${count} 张 JPG 分享图下载；如被拦截，请允许多文件下载`);
+  } catch (error) {
+    toast(`已发起 ${count} 张下载，其余未完成：${error.message}`);
+  } finally {
+    batchShareDownloading = false;
+    document.querySelectorAll('[data-batch-share]').forEach(button => { button.disabled = false; });
   }
 }
 
