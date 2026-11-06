@@ -5,12 +5,9 @@ function collectMeta() {
   const recipe = recipesCache.find(item => item.id === $('recipeSelect').value);
   const isMedium = $('model').value === 'nai-diffusion-5-full-medium';
   const currentCharacterPrompt = $('characterPrompt').value.trim();
-  const linkedCharacters = selectedCharacterIds().map(id => characters().find(character => character.id === id)).filter(character => {
-    const prompt = characterPrompt(character);
-    return prompt && currentCharacterPrompt.includes(prompt);
-  });
-  const baseNegativePrompt = $('negativePrompt').value.trim();
-  const negativePrompt = [...new Set([baseNegativePrompt, ...linkedCharacters.map(character => character.negativePrompt?.trim())].filter(Boolean))].join(', ');
+  const linkedCharacters = selectedPromptCharacters();
+  const baseNegativePrompt = syncCharacterNegativePrompt().trim();
+  const negativePrompt = $('negativePrompt').value.trim();
   return {
     wordSources: collectedWordSources(Object.fromEntries(WORD_PROMPT_FIELDS.map(field => [field, $(field).value]))),
     title: $('scenePrompt').value.trim().slice(0, 42) || recipe?.name || '未命名镜头',

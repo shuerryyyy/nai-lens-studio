@@ -257,13 +257,44 @@ function updateAdvancedSummary() {
   $('advancedSummary').textContent = `${$('steps').value || 28} Steps · Guidance ${$('scale').value || 7} · ${samplerName($('sampler').value)} · ${$('noiseSchedule').value || 'karras'}`;
 }
 
+let characterNegativeSuffix = '';
+
+function baseNegativePrompt() {
+  const value = $('negativePrompt').value;
+  if (!characterNegativeSuffix || !value.endsWith(characterNegativeSuffix)) return value;
+  const base = value.slice(0, -characterNegativeSuffix.length);
+  return characterNegativeSuffix.startsWith(', ') ? base : base.replace(/,\s*$/, '');
+}
+
+function selectedPromptCharacters() {
+  const prompt = $('characterPrompt').value.trim();
+  return selectedCharacterIds().map(id => characters().find(character => character.id === id)).filter(character => {
+    const value = characterPrompt(character);
+    return value && prompt.includes(value);
+  });
+}
+
+function syncCharacterNegativePrompt(base = baseNegativePrompt()) {
+  const additions = [...new Set(selectedPromptCharacters().map(character => character.negativePrompt?.trim()).filter(value => value && value !== base))].join(', ');
+  characterNegativeSuffix = additions ? `${base ? ', ' : ''}${additions}` : '';
+  const element = $('negativePrompt'), value = base + characterNegativeSuffix;
+  if (element.value !== value) {
+    const start = element.selectionStart, end = element.selectionEnd;
+    element.value = value;
+    if (document.activeElement === element) element.setSelectionRange(start, end);
+  }
+  return base;
+}
+
 function saveSettings() {
+  const negative = syncCharacterNegativePrompt();
   const data = {};
   fields.forEach(id => {
     const element = $(id);
     if (!element) return;
     data[id] = element.type === 'checkbox' ? element.checked : element.value;
   });
+  data.negativePrompt = negative;
   data.originalSeed = originalSeed;
   data.adapterId = NaiAdapters.selectedId();
   data.wordSources = collectedWordSources(data);
@@ -276,6 +307,7 @@ function saveSettings() {
 }
 
 function loadSettings() {
+  characterNegativeSuffix = '';
   let data = {};
   try { data = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch {}
   if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
@@ -511,6 +543,7 @@ function setSelectedCharacterIds(ids = []) {
 }
 
 function updateActiveCharacterLabel() {
+  syncCharacterNegativePrompt();
   const selected = selectedCharacterIds().map(id => characters().find(character => character.id === id)).filter(Boolean);
   $('activeCharacterNames').innerHTML = selected.length
     ? `已关联人物：<strong>${selected.map(character => escapeHTML(character.name)).join(' + ')}</strong>`
@@ -761,6 +794,7 @@ function applyRecipe(recipe, includeParams = true) {
   $('artistPrompt').value = recipe.artistPrompt || '';
   $('positivePrompt').value = recipe.positivePrompt || '';
   $('negativePrompt').value = recipe.negativePrompt || '';
+  characterNegativeSuffix = '';
   setRecipeAssociation(recipe);
   resetSeedForSource(recipe);
   if (includeParams) {
@@ -796,7 +830,7 @@ function openRecipeEditor(recipe = null, prefillCurrent = false) {
   $('recipeName').value = recipe?.name || '';
   $('recipeArtist').value = recipe?.artistPrompt || (prefillCurrent ? $('artistPrompt').value : '');
   $('recipePositive').value = recipe?.positivePrompt || (prefillCurrent ? $('positivePrompt').value : '');
-  $('recipeNegative').value = recipe?.negativePrompt || (prefillCurrent ? $('negativePrompt').value : '');
+  $('recipeNegative').value = recipe?.negativePrompt || (prefillCurrent ? baseNegativePrompt() : '');
   $('recipeTags').value = (recipe?.tags || (prefillCurrent ? splitTags($('tags').value) : [])).join(', ');
   $('recipeAuthor').value = recipe?.author || '';
   $('recipeNote').value = recipe?.note || '';
@@ -1643,6 +1677,7 @@ async function batchDownloadArtworkJpegs() {
 }
 
 function reuseArtwork(item) {
+  characterNegativeSuffix = '';
   resetSeedForSource(item, false);
   $('clothingPrompt').value = item.clothingPrompt || '';
   trackedWordSources = structuredClone(Array.isArray(item.wordSources) ? item.wordSources : inferredWordSources(item));
@@ -1689,7 +1724,9 @@ function renderPickerList() {
     if (!item) return;
     recordLibraryUse(item.libraryType, item.recordId);
     const target = $(pickerTargetId);
-    target.value = button.dataset.pickerMode === 'append' && target.value.trim() ? `${target.value.trim()}, ${item.value}` : item.value;
+    const previous = pickerTargetId === 'negativePrompt' ? baseNegativePrompt() : target.value.trim();
+    if (pickerTargetId === 'negativePrompt') characterNegativeSuffix = '';
+    target.value = button.dataset.pickerMode === 'append' && previous ? `${previous}, ${item.value}` : item.value;
     trackWordSource(item.libraryType === 'words' ? words().find(word => String(word.id) === String(item.recordId)) : null, pickerTargetId, item.value, button.dataset.pickerMode === 'append');
     if (pickerTargetId === 'artistPrompt') syncArtistRecipe(item.libraryType === 'recipes' ? item.recordId : '');
     if (pickerKind === 'scene') setAutoSceneTag(item.name);
@@ -1951,10 +1988,12 @@ function useWord(id) {
   recordLibraryUse('words', word.id);
   if (word.kind === 'bundle') {
     const bundle = bundleData(word);
+    if (bundle.negativePrompt !== undefined) characterNegativeSuffix = '';
     ['artistPrompt', 'positivePrompt', 'negativePrompt'].forEach(key => {
       if (bundle[key] !== undefined) { $(key).value = bundle[key]; trackWordSource(word, key, bundle[key]); }
     });
   } else {
+    if (word.kind === 'negative') characterNegativeSuffix = '';
     $(`${word.kind}Prompt`).value = word.content || '';
     trackWordSource(word, `${word.kind}Prompt`, word.content || '');
     if (word.kind === 'scene') setAutoSceneTag(word.name);
