@@ -436,10 +436,21 @@ function updateModelUI() {
   renderVibePanel();
   const model = $('model').value;
   const isV5 = model.startsWith('nai-diffusion-5-');
+  const isMedium = model === 'nai-diffusion-5-full-medium';
   $('modelBadge').textContent = isV5 ? 'V5' : model.includes('4-5') ? 'V4.5' : model.includes('diffusion-4-') ? 'V4' : 'V3';
-  $('modelHelp').textContent = isV5
+  $('modelHelp').textContent = isMedium
+    ? 'V5 Full Medium（Turbo）· 官方蒸馏版'
+    : isV5
     ? (model.endsWith('full') ? 'V5 Full · 长提示词、多角色与透明背景' : 'V5 Curated · 更干净、聚焦的训练集')
     : (model.includes('4-5') ? 'V4.5 · 兼容传统 TAG 与角色提示' : model.includes('diffusion-4-') ? 'V4 · 多角色与 Vibe 参考' : 'Anime V3 · 传统标签模型');
+  $('steps').disabled = isMedium;
+  $('sampler').disabled = isMedium;
+  $('negativePrompt').disabled = isMedium;
+  $('modelConstraintNote').hidden = !isMedium;
+  if (isMedium) {
+    $('steps').value = '14';
+    $('sampler').value = 'k_euler_ancestral';
+  }
   $('transparentWrap').style.opacity = isV5 ? '1' : '.42';
   $('transparentBg').disabled = !isV5;
 }
@@ -754,7 +765,7 @@ function applyRecipe(recipe, includeParams = true) {
     if (Array.isArray(recipe.defaultParams?.vibes)) restoreVibeSelection(recipe.defaultParams.vibes, recipe.defaultParams.model);
     Object.entries(pickParams(recipe.defaultParams || {})).forEach(([key, value]) => {
       const element = $(key);
-      if (!element || value === undefined || value === null || (key === 'model' && !value)) return;
+      if (!element || key === 'size' || value === undefined || value === null || (key === 'model' && !value)) return;
       if (element.type === 'checkbox') element.checked = Boolean(value);
       else element.value = value;
     });

@@ -3,6 +3,7 @@
 
 function collectMeta() {
   const recipe = recipesCache.find(item => item.id === $('recipeSelect').value);
+  const isMedium = $('model').value === 'nai-diffusion-5-full-medium';
   const currentCharacterPrompt = $('characterPrompt').value.trim();
   const linkedCharacters = selectedCharacterIds().map(id => characters().find(character => character.id === id)).filter(character => {
     const prompt = characterPrompt(character);
@@ -14,11 +15,11 @@ function collectMeta() {
     scenePrompt: $('scenePrompt').value.trim(), clothingPrompt: $('clothingPrompt').value.trim(), characterPrompt: currentCharacterPrompt,
     characterIds: linkedCharacters.map(character => character.id), characterNames: linkedCharacters.map(character => character.name),
     characterId: linkedCharacters[0]?.id || '', characterName: linkedCharacters[0]?.name || '', artistPrompt: $('artistPrompt').value.trim(),
-    positivePrompt: $('positivePrompt').value.trim(), negativePrompt: $('negativePrompt').value.trim(),
+    positivePrompt: $('positivePrompt').value.trim(), negativePrompt: isMedium ? '' : $('negativePrompt').value.trim(),
     fullPrompt: fullPrompt(), model: $('model').value, size: $('size').value,
     recipeId: recipe?.id || '', category: recipe?.name || '未分类', tags: splitTags($('tags').value),
-    steps: Number($('steps').value) || 28, scale: $('scale').value.trim() === '' ? 7 : Number($('scale').value),
-    seed: $('seed').value.trim(), sampler: $('sampler').value,
+    steps: isMedium ? 14 : Number($('steps').value) || 28, scale: $('scale').value.trim() === '' ? 7 : Number($('scale').value),
+    seed: $('seed').value.trim(), sampler: isMedium ? 'k_euler_ancestral' : $('sampler').value,
     noiseSchedule: $('noiseSchedule').value, transparentBg: $('transparentBg').checked,
     provider: $('apiMode').value,
     vibes: vibeSupported($('model').value) ? structuredClone(vibeSelection.filter(item => item.enabled !== false)) : []

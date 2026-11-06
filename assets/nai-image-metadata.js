@@ -102,7 +102,10 @@ function extractArtistPrompt(prompt) {
 function normalizeModel(value = '') {
   const model = String(value).toLowerCase();
   if (model.includes('4.5') || model.includes('4-5')) return model.includes('curated') ? 'nai-diffusion-4-5-curated' : 'nai-diffusion-4-5-full';
-  if (/(?:diffusion[\s-]*|\bv)5\b/.test(model)) return model.includes('curated') ? 'nai-diffusion-5-curated' : 'nai-diffusion-5-full';
+  if (/(?:diffusion[\s-]*|\bv)5\b/.test(model)) {
+    if (/medium|turbo|93f4bd30|70ab5786/.test(model)) return 'nai-diffusion-5-full-medium';
+    return model.includes('curated') ? 'nai-diffusion-5-curated' : 'nai-diffusion-5-full';
+  }
   if (/(?:diffusion[\s-]*|\bv)4\b/.test(model)) return model.includes('curated') ? 'nai-diffusion-4-curated' : 'nai-diffusion-4-full';
   return model.includes('v3') || model.includes('diffusion-3') ? 'nai-diffusion-3' : '';
 }

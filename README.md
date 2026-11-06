@@ -18,9 +18,15 @@
 
 ### 下载单文件版
 
-[下载 v2.26.1 单文件版](download/nai-lens-studio-v2.26.1-standalone.html)
+[下载 v2.27 单文件版](download/nai-lens-studio-v2.27-standalone.html)
 
 下载后直接用浏览器打开即可。单文件版已经内嵌主程序、ZIP 解析组件和标题字体，适合保存到电脑或发送到手机使用。
+
+## v2.27 画布尺寸与 V5 Full Medium
+
+切换、保存或编辑配方时，创作台画布尺寸保持当前选择；旧配方的尺寸记录仍保留。图库图片带回创作台时继续使用图片原有参数。
+
+新增 V5 Full Medium（Turbo）模型。它固定使用 14 步和 Euler Ancestral，不支持自定义负面词；切换至该模型时会暂停发送负面词，原内容保留，切回普通模型后恢复。第三方接口需要支持此模型；未进行真实付费生图验证。详见 [NovelAI 官方说明](https://journal.novelai.net/novelai-diffusion-v5-full-effort-toggle/)。
 
 ## v2.26 多选分享图下载与散词删除
 
@@ -68,7 +74,7 @@
 
 ## 主要功能
 
-- 支持 NAI Diffusion V5 Full、V5 Curated、V4.5、V4 与 V3（实际支持以服务商为准）。
+- 支持 NAI Diffusion V5 Full、V5 Full Medium、V5 Curated、V4.5、V4 与 V3（实际支持以服务商为准）。
 - 分开编辑和复制画面描述、人物提示词、服装、画师串、正面词与负面词。
 - 以“配方档案”保存画师风格、适用模型、常用参数、作者备注、来源和对应作品。
 - 四个资料库支持文件夹展开、收起、改名及内容移动；删除文件夹不会删除其中资料，文件夹随对应资料库一起备份。
