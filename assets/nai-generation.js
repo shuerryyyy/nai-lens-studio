@@ -9,13 +9,15 @@ function collectMeta() {
     const prompt = characterPrompt(character);
     return prompt && currentCharacterPrompt.includes(prompt);
   });
+  const baseNegativePrompt = $('negativePrompt').value.trim();
+  const negativePrompt = [...new Set([baseNegativePrompt, ...linkedCharacters.map(character => character.negativePrompt?.trim())].filter(Boolean))].join(', ');
   return {
     wordSources: collectedWordSources(Object.fromEntries(WORD_PROMPT_FIELDS.map(field => [field, $(field).value]))),
     title: $('scenePrompt').value.trim().slice(0, 42) || recipe?.name || '未命名镜头',
     scenePrompt: $('scenePrompt').value.trim(), clothingPrompt: $('clothingPrompt').value.trim(), characterPrompt: currentCharacterPrompt,
     characterIds: linkedCharacters.map(character => character.id), characterNames: linkedCharacters.map(character => character.name),
     characterId: linkedCharacters[0]?.id || '', characterName: linkedCharacters[0]?.name || '', artistPrompt: $('artistPrompt').value.trim(),
-    positivePrompt: $('positivePrompt').value.trim(), negativePrompt: isMedium ? '' : $('negativePrompt').value.trim(),
+    positivePrompt: $('positivePrompt').value.trim(), baseNegativePrompt, negativePrompt: isMedium ? '' : negativePrompt,
     fullPrompt: fullPrompt(), model: $('model').value, size: $('size').value,
     recipeId: recipe?.id || '', category: recipe?.name || '未分类', tags: splitTags($('tags').value),
     steps: isMedium ? 14 : Number($('steps').value) || 28, scale: $('scale').value.trim() === '' ? 7 : Number($('scale').value),

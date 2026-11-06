@@ -201,7 +201,7 @@ function mergeCharacterRevision(existing, incoming) {
   const incomingRevision = revision(incoming), existingRevision = revision(existing);
   if (!incomingRevision || incomingRevision <= existingRevision) return { record: { ...existing }, changed: false };
   const record = { ...existing };
-  const editable = ['name', 'fullPrompt', ...Object.keys(characterFieldLabels), 'tags', 'favorite', 'note', 'sourceUrl', 'author'];
+  const editable = ['name', 'fullPrompt', 'negativePrompt', ...Object.keys(characterFieldLabels), 'tags', 'favorite', 'note', 'sourceUrl', 'author'];
   for (const key of editable) {
     // An explicit empty value is an edit; a field absent in old formats is not.
     if (Object.prototype.hasOwnProperty.call(incoming, key)) record[key] = incoming[key];
@@ -222,6 +222,7 @@ function mergeRecord(existing, incoming, type = '') {
     if (!merged[key] && incoming[key]) merged[key] = incoming[key];
   });
   if (existing.favorite || incoming.favorite) merged.favorite = true;
+  if (type === 'character' && !merged.negativePrompt && incoming.negativePrompt) merged.negativePrompt = incoming.negativePrompt;
   if (existing.lastUsedAt || incoming.lastUsedAt) merged.lastUsedAt = Math.max(existing.lastUsedAt || 0, incoming.lastUsedAt || 0);
   if (type === 'recipe') merged.defaultParams = { ...(incoming.defaultParams || {}), ...(existing.defaultParams || {}) };
   if (type === 'collection' && Number.isSafeInteger(incoming.manualOrder) && (existing.manualOrder === undefined || existing.transferId && existing.transferId === incoming.transferId && Number(incoming.updatedAt) > Number(existing.updatedAt))) merged.manualOrder = incoming.manualOrder;

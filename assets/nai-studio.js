@@ -536,6 +536,7 @@ function openCharacterEditor(id) {
   $('characterEditId').value = character.id;
   $('characterName').value = character.name || '';
   $('characterFullPrompt').value = character.fullPrompt || '';
+  $('characterNegativePrompt').value = character.negativePrompt || '';
   $('characterGender').value = character.gender || '';
   $('characterHair').value = character.hair || '';
   $('characterEyes').value = character.eyes || '';
@@ -576,11 +577,11 @@ function renderCharacters() {
   const list = characters().filter(character => !query || [
     character.name, character.fullPrompt, character.gender, character.hair, character.eyes,
     character.skin, character.body, character.features, character.outfit,
-    character.naturalAppearance, character.sourceUrl, ...(character.tags || [])
+    character.naturalAppearance, character.negativePrompt, character.sourceUrl, ...(character.tags || [])
   ].join(' ').toLowerCase().includes(query));
   listElement.innerHTML = list.length ? list.map(character => {
     const prompt = characterPrompt(character);
-    return `<article class="character-card"><div class="character-head"><div><h2>${escapeHTML(character.name)}</h2><div class="chips">${(character.tags || []).map(tag => `<span class="chip">${escapeHTML(tag)}</span>`).join('') || '<span class="chip">未添加标签</span>'}</div></div><button class="icon-btn${character.favorite ? ' favorite-active' : ''}" data-character-favorite="${escapeHTML(character.id)}" type="button" aria-label="${character.favorite ? '取消收藏' : '收藏'}${escapeHTML(character.name)}" aria-pressed="${Boolean(character.favorite)}">${icon('star')}</button></div><p class="character-prompt">${escapeHTML(prompt || '还没有完整人物提示词')}</p><div class="character-actions"><button class="primary" data-character-use="${escapeHTML(character.id)}" type="button">放入创作台</button><button class="secondary" data-character-copy="${escapeHTML(character.id)}" type="button">复制完整描述</button><button class="secondary" data-character-edit="${escapeHTML(character.id)}" type="button">修改</button><button class="danger-btn" data-character-delete="${escapeHTML(character.id)}" type="button">删除</button></div><details class="character-details"><summary>查看并复制分类资料</summary><div class="character-fields">${Object.keys(characterFieldLabels).map(key => characterDetailHTML(character, key)).join('')}</div></details></article>`;
+    return `<article class="character-card"><div class="character-head"><div><h2>${escapeHTML(character.name)}</h2><div class="chips">${(character.tags || []).map(tag => `<span class="chip">${escapeHTML(tag)}</span>`).join('') || '<span class="chip">未添加标签</span>'}</div></div><button class="icon-btn${character.favorite ? ' favorite-active' : ''}" data-character-favorite="${escapeHTML(character.id)}" type="button" aria-label="${character.favorite ? '取消收藏' : '收藏'}${escapeHTML(character.name)}" aria-pressed="${Boolean(character.favorite)}">${icon('star')}</button></div><p class="character-prompt">${escapeHTML(prompt || '还没有完整人物提示词')}</p>${character.negativePrompt ? `<p class="character-prompt">专属负面词：${escapeHTML(character.negativePrompt)}</p>` : ''}<div class="character-actions"><button class="primary" data-character-use="${escapeHTML(character.id)}" type="button">放入创作台</button><button class="secondary" data-character-copy="${escapeHTML(character.id)}" type="button">复制完整描述</button><button class="secondary" data-character-edit="${escapeHTML(character.id)}" type="button">修改</button><button class="danger-btn" data-character-delete="${escapeHTML(character.id)}" type="button">删除</button></div><details class="character-details"><summary>查看并复制分类资料</summary><div class="character-fields">${Object.keys(characterFieldLabels).map(key => characterDetailHTML(character, key)).join('')}</div></details></article>`;
   }).join('') : '<div class="empty"><div><b>人物库还是空的</b><span>把常用角色保存下来，以后可以一键放入创作台。</span></div></div>';
   if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('characters', list, listElement, '.character-card');
   listElement.querySelectorAll('[data-character-use]').forEach(button => button.onclick = () => useCharacter(button.dataset.characterUse));
@@ -620,6 +621,7 @@ $('characterForm').onsubmit = event => {
     ...old,
     id: editId || makeId(), name: $('characterName').value.trim(),
     fullPrompt: $('characterFullPrompt').value.trim(), gender: $('characterGender').value.trim(),
+    negativePrompt: $('characterNegativePrompt').value.trim(),
     hair: $('characterHair').value.trim(), eyes: $('characterEyes').value.trim(),
     skin: $('characterSkin').value.trim(), body: $('characterBody').value.trim(),
     features: $('characterFeatures').value.trim(), outfit: $('characterOutfit').value.trim(),
@@ -1648,6 +1650,7 @@ function reuseArtwork(item) {
   ['scenePrompt', 'clothingPrompt', 'characterPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model', 'size', 'steps', 'scale', 'sampler', 'noiseSchedule'].forEach(key => {
     if (item[key] !== undefined && $(key)) $(key).value = item[key];
   });
+  if (typeof item.baseNegativePrompt === 'string') $('negativePrompt').value = item.baseNegativePrompt;
   $('tags').value = (item.tags || []).join(', ');
   setSelectedCharacterIds(inferredArtworkCharacterIds(item));
   $('transparentBg').checked = Boolean(item.transparentBg);
@@ -1779,7 +1782,7 @@ function openPicker(kind, targetId = `${kind}Prompt`) {
   showDialog('pickerDialog');
   requestAnimationFrame(() => {
     if (pickerKind !== kind || !$('pickerDialog').open) return;
-    $('pickerSearch').focus({ preventScroll: true });
+    $('pickerDialog').querySelector('[data-close-dialog]').focus({ preventScroll: true });
     $('pickerList').scrollTop = Number.isFinite(viewState.scrollTop) ? viewState.scrollTop : 0;
     $('pickerDialog').scrollTop = Number.isFinite(viewState.dialogScrollTop) ? viewState.dialogScrollTop : 0;
   });
