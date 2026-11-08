@@ -197,7 +197,7 @@ function groupRenderedLibrary(type, list, host, selector) {
     const header = document.createElement('div'); header.className = 'folder-heading';
     const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'folder-toggle';
     toggle.innerHTML = `${icon('chevron-right')}${icon('folder')}<span>${escapeHTML(folder.name)}</span><small>${grouped.length}</small>`;
-    const body = document.createElement('div'); body.className = `folder-items ${type === 'artworks' ? 'library-images' : type === 'recipes' ? 'recipe-grid' : type === 'words' ? 'word-list' : 'character-list'}`;
+    const body = document.createElement('div'); body.className = `folder-items ${type === 'artworks' ? 'library-images' : type === 'recipes' ? 'recipe-grid' : type === 'words' ? (wordLibraryFormat() === 'gallery' ? 'recipe-grid word-gallery' : 'word-list') : 'character-list'}`;
     body.id = `folder-${type}-${folder.id || 'unfiled'}`; toggle.setAttribute('aria-controls', body.id);
     const stateKey = `nai_folder_open_${type}_${folder.id || 'unfiled'}`;
     let open = localStorage.getItem(stateKey) !== 'false';

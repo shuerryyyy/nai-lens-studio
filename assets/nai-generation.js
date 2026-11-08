@@ -345,4 +345,5 @@ matchMedia('(max-width:1100px)').addEventListener('change', () => {
   if (!db) return;
   renderImageLibrary();
   renderRecipes();
+  renderWords();
 });

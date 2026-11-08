@@ -147,6 +147,21 @@ html[data-theme] .recipe-context {background:transparent;border:0;border-bottom:
 .library-image:hover img,.recipe-image:hover img {transform:none;filter:brightness(.94)}
 .library-image.selected,.recipe-image.selected {outline:2px solid var(--signal);outline-offset:3px;box-shadow:none}
 .recipe-card.active {outline:1px solid var(--signal);outline-offset:4px;border-color:transparent}
+.word-gallery-card {position:relative;min-width:0}
+.word-gallery-card>.recipe-card {display:block;width:100%}
+.word-gallery-card>.word-actions {position:absolute;top:4px;right:4px;background:var(--bg);opacity:0}
+.word-gallery-card:hover>.word-actions,.word-gallery-card:focus-within>.word-actions {opacity:1}
+.word-gallery-layout:has(#wordInspector[hidden]) {grid-template-columns:1fr}
+.word-inspector {min-width:0}
+.word-inspector .word-mobile-summary {display:none}
+.word-inspector .word-row {display:block;padding:0 0 20px}
+.word-inspector .word-row .word-row-details {display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:0}
+.word-inspector .word-content>b {display:none}
+.word-inspector .word-content p,.word-inspector .word-summary span {display:block;white-space:pre-wrap;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;max-height:none;-webkit-line-clamp:unset}
+.word-format-setting {margin-top:24px}
+@media(max-width:760px), (max-width:1100px) and (pointer:coarse) {
+  .word-gallery-card>.word-actions {opacity:1}
+}
 .recipe-card-body {padding:13px 0 8px}
 .recipe-card-title {font-weight:500;font-size:14px}
 .recipe-card-meta {font-size:12px;margin-top:5px}

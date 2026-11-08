@@ -1,8 +1,8 @@
 'use strict';
 /* Image import preview and atomic archive controller. */
 
-async function beginImageImport(file, targetRecipeId = '') {
-  pendingImport = { file, targetRecipeId, metadata: null };
+async function beginImageImport(file, targetRecipeId = '', targetWordId = '') {
+  pendingImport = { file, targetRecipeId, targetWordId, metadata: null };
   const importing = pendingImport;
   if (importPreviewUrl) URL.revokeObjectURL(importPreviewUrl);
   importPreviewUrl = URL.createObjectURL(file);
@@ -13,7 +13,7 @@ async function beginImageImport(file, targetRecipeId = '') {
   $('importNegative').value = '';
   $('importRawPrompt').value = '';
   $('importRawMeta').textContent = '';
-  $('importRecipeMode').value = targetRecipeId ? 'existing' : 'new';
+  $('importRecipeMode').value = targetRecipeId ? 'existing' : targetWordId ? 'none' : 'new';
   $('importRecipeSelect').value = targetRecipeId || recipesCache[0]?.id || '';
   updateImportMode();
   showDialog('imageImportDialog');
@@ -67,6 +67,7 @@ $('imageImportForm').onsubmit = async event => {
   const importing = pendingImport;
   let saved = false;
   try {
+  if (importing.targetWordId && !words().some(word => word.id === importing.targetWordId)) throw new Error('词条已不存在，请重新选择例图归属');
   const mode = $('importRecipeMode').value;
   let recipeId = '';
   let recipe = null;
@@ -95,7 +96,8 @@ $('imageImportForm').onsubmit = async event => {
     scale: metadata.scale ?? '', seed: metadata.seed || '', sampler: metadata.sampler || '',
     noiseSchedule: metadata.noiseSchedule || '', recipeId,
     category: recipe?.name || '未分类', tags: [], blob: importing.file,
-    imported: true, importedAt: Date.now(), createdAt: Date.now(), rawMetadata: metadata.raw || {}
+    imported: true, importedAt: Date.now(), createdAt: Date.now(), rawMetadata: metadata.raw || {},
+    ...(importing.targetWordId ? { exampleWordIds: [importing.targetWordId] } : {})
   };
   await withArtworkStorage(async () => {
   const storedArtwork = await artworkForStorage(artwork);
@@ -127,9 +129,9 @@ $('imageImportForm').onsubmit = async event => {
   saved = true;
   if (pendingImport === importing) { closeDialog('imageImportDialog'); pendingImport = null; }
   await refreshData();
-  if (recipeId) inspectRecipe(recipesCache.find(item => item.id === recipeId));
-  switchView('gallery');
-  toast(recipeId ? '图片与配方已归档' : '图片已保存，未关联配方');
+  if (importing.targetWordId) { expandedWordId = importing.targetWordId; switchView('words'); }
+  else { if (recipeId) inspectRecipe(recipesCache.find(item => item.id === recipeId)); switchView('gallery'); }
+  toast(importing.targetWordId ? '例图已保存到词条' : recipeId ? '图片与配方已归档' : '图片已保存，未关联配方');
   } catch (error) { toast(saved ? '图片已保存，但列表刷新未完成：' + error.message + '；请刷新查看。' : '导入失败：' + error.message + '；文件与表单已保留。'); }
   finally { submit.disabled = false; }
 };

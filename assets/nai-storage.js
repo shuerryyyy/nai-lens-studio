@@ -14,6 +14,7 @@ function normalizeLibraryRecord(record, type, strict = false) {
   }
   result.tags = Array.isArray(record.tags) ? record.tags.filter(tag => typeof tag === 'string') : splitTags(record.tags);
   if (Array.isArray(record.characterIds)) result.characterIds = record.characterIds.map(String);
+  if (Array.isArray(record.exampleWordIds)) result.exampleWordIds = record.exampleWordIds.map(String);
   if (type === 'word') {
     if (!WORD_KINDS.includes(record.kind) && strict) throw new Error('备份包含不支持的散词类型');
     result.kind = WORD_KINDS.includes(record.kind) ? record.kind : 'artist';
@@ -107,6 +108,22 @@ const dbDelete = (store, id) => storeRequest(store, 'readwrite', objectStore => 
 const dbClear = store => storeRequest(store, 'readwrite', objectStore => objectStore.clear());
 const dbGet = (store, id) => storeRequest(store, 'readonly', objectStore => objectStore.get(id)).then(record => store === 'artworks' ? artworkFromStorage(record) : record);
 const dbAll = store => storeRequest(store, 'readonly', objectStore => objectStore.getAll()).then(records => store === 'artworks' ? records.map(artworkFromStorage) : records);
+
+function backupArtworkMetadata() {
+  return new Promise((resolve, reject) => {
+    const records = [], tx = db.transaction('artworks', 'readonly');
+    const request = tx.objectStore('artworks').openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      const { blob, ...record } = cursor.value;
+      records.push({ ...record, _backupBlobSize: blob?.size ?? blob?.bytes?.byteLength ?? 0 });
+      cursor.continue();
+    };
+    tx.oncomplete = () => resolve(records);
+    tx.onabort = tx.onerror = () => reject(tx.error || request.error || new Error('读取图片资料失败'));
+  });
+}
 
 // Commit related records together; caches are refreshed only after success.
 async function commitRecords(writes = {}, removals = {}) {

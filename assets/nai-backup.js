@@ -53,10 +53,10 @@ function selectedBackupTypes() {
   return new Set([...document.querySelectorAll('[name="backupDataType"]:checked')].map(input => input.value));
 }
 
-async function backupSelection(scope = 'all', startDate = '', endDate = '', selectedTypes = new Set(BACKUP_DATA_TYPES)) {
+async function backupSelection(scope = 'all', startDate = '', endDate = '', selectedTypes = new Set(BACKUP_DATA_TYPES), metadataOnly = false) {
   const types = selectedTypes instanceof Set ? selectedTypes : new Set(selectedTypes || []);
   if (!types.size) throw new Error('请至少选择一类要备份的数据');
-  const allArtworks = await dbAll('artworks');
+  const allArtworks = types.has('artworks') ? await (metadataOnly ? backupArtworkMetadata() : dbAll('artworks')) : [];
   const allRecipes = await dbAll('recipes');
   const allWords = types.has('words') ? words() : [];
   const allCharacters = types.has('characters') ? characters() : [];
@@ -76,7 +76,7 @@ async function backupSelection(scope = 'all', startDate = '', endDate = '', sele
   const linkedRecipeIds = new Set(selectedArtworks.map(item => String(item.recipeId || '')).filter(Boolean));
   const selectedRecipes = types.has('recipes') ? allRecipes.filter(item => itemInDateRange(item, bounds) || linkedRecipeIds.has(String(item.id))) : [];
   const linkedCharacterIds = new Set(selectedArtworks.flatMap(artworkCharacterIds));
-  const linkedWordIds = new Set(selectedArtworks.flatMap(item => (Array.isArray(item.wordSources) ? item.wordSources : []).filter(Boolean).map(source => String(source.wordId || ''))));
+  const linkedWordIds = new Set(selectedArtworks.flatMap(item => [...(Array.isArray(item.wordSources) ? item.wordSources : []).filter(Boolean).map(source => String(source.wordId || '')), ...(Array.isArray(item.exampleWordIds) ? item.exampleWordIds.map(String) : [])]));
   const linkedVibeIds = new Set(selectedArtworks.flatMap(item => (item.vibes || []).map(entry => entry.id)));
   for (const recipe of allRecipes.filter(item => linkedRecipeIds.has(String(item.id)) || selectedRecipes.includes(item))) for (const item of recipe.defaultParams?.vibes || []) linkedVibeIds.add(item.id);
   for (const mix of allVibes.filter(item => item.type === 'bundle' && itemInDateRange(item,bounds))) for (const item of mix.items) linkedVibeIds.add(item.id);
@@ -94,6 +94,7 @@ function withTransferId(item, type, sourceDeviceId) {
 }
 
 async function updateBackupSummary() {
+  if (backupExportBusy || pendingBackupExport) return;
   const scope = document.querySelector('[name="backupScope"]:checked')?.value || 'all';
   const types = selectedBackupTypes();
   $('backupRange').hidden = scope !== 'range';
@@ -102,7 +103,8 @@ async function updateBackupSummary() {
   $('backupSubmitBtn').disabled = !types.size;
   $('backupSummary').classList.toggle('is-warning', !types.size);
   try {
-    const selected = await backupSelection(scope, $('backupStartDate').value, $('backupEndDate').value, types);
+    const selected = await backupSelection(scope, $('backupStartDate').value, $('backupEndDate').value, types, true);
+    if (backupExportBusy || pendingBackupExport) return;
     $('backupSummary').textContent = `将备份 ${selected.artworks.length} 张图片、${selected.recipes.length} 份配方、${selected.characters.length} 个人物、${selected.words.length} 个词条和 ${selected.vibes.length} 份 Vibe 素材/组合`;
   } catch (error) {
     $('backupSummary').textContent = error.message;
@@ -121,74 +123,6 @@ document.querySelectorAll('[name="backupScope"]').forEach(input => input.addEven
 document.querySelectorAll('[name="backupDataType"]').forEach(input => input.addEventListener('change', updateBackupSummary));
 $('backupStartDate').addEventListener('change', updateBackupSummary);
 $('backupEndDate').addEventListener('change', updateBackupSummary);
-
-$('backupForm').onsubmit = async event => {
-  event.preventDefault();
-  try {
-    const scope = document.querySelector('[name="backupScope"]:checked')?.value || 'all';
-    const startDate = $('backupStartDate').value;
-    const endDate = $('backupEndDate').value;
-    const types = selectedBackupTypes();
-    const selected = await backupSelection(scope, startDate, endDate, types);
-    const sourceDeviceId = deviceId();
-    const packed = [];
-    for (const source of selected.artworks) {
-      const artwork = { ...withTransferId(source, 'artwork', sourceDeviceId), contentHash: source.contentHash || await blobFingerprint(source.blob) };
-      if (!source.transferId || !source.contentHash) await dbPut('artworks', artwork);
-      const exportedArtwork = { ...artwork };
-      if (Array.isArray(artwork.wordSources)) exportedArtwork.wordSources = artwork.wordSources.filter(Boolean).map(source => {
-        const word = currentWordSourceIndex().find(entry => String(entry.word.id) === String(source.wordId))?.word;
-        return word ? { ...source, author: word.author || '', sourceUrl: word.sourceUrl || '', name: word.name || '' } : source;
-      });
-      if (!types.has('recipes')) exportedArtwork.recipeId = '';
-      if (!types.has('characters')) {
-        exportedArtwork.characterId = '';
-        exportedArtwork.characterIds = [];
-      }
-      packed.push({ ...exportedArtwork, blob: await blobToDataURL(source.blob) });
-    }
-    const packedRecipes = [];
-    for (const source of selected.recipes) {
-      const recipe = withTransferId(source, 'recipe', sourceDeviceId);
-      if (!source.transferId) await dbPut('recipes', recipe);
-      packedRecipes.push(recipe);
-    }
-    const packedWords = selected.words.map(item => withTransferId(item, 'word', sourceDeviceId));
-    const packedCharacters = selected.characters.map(item => withTransferId(item, 'character', sourceDeviceId));
-    if (packedWords.some((item, index) => item.transferId !== selected.words[index]?.transferId)) {
-      const identities = new Map(packedWords.map(item => [String(item.id), item.transferId]));
-      writeLocalLibrary(WORDS_KEY, 'word', words().map(item => identities.has(String(item.id)) ? { ...item, transferId: identities.get(String(item.id)) } : item));
-    }
-    if (packedCharacters.some((item, index) => item.transferId !== selected.characters[index]?.transferId)) {
-      const identities = new Map(packedCharacters.map(item => [String(item.id), item.transferId]));
-      writeLocalLibrary(CHARACTERS_KEY, 'character', characters().map(item => identities.has(String(item.id)) ? { ...item, transferId: identities.get(String(item.id)) } : item));
-    }
-    const payload = {
-      app: 'NAI 镜头台', version: 9, exportedAt: new Date().toISOString(),
-      scope: scope === 'range' ? { type: 'range', startDate, endDate } : { type: 'all' },
-      includedTypes: BACKUP_DATA_TYPES.filter(type => types.has(type)),
-      artworks: packed,
-      recipes: packedRecipes,
-      words: packedWords,
-      characters: packedCharacters,
-      vibeRecords: selected.vibes,
-      collections: selected.collections.map(item => withTransferId(item, 'collection', sourceDeviceId))
-    };
-    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    const rangeLabel = scope === 'range' ? `${startDate}至${endDate}` : `全部_${localDateString()}`;
-    const typeLabel = types.size === BACKUP_DATA_TYPES.length ? '全部内容' : BACKUP_DATA_TYPES.filter(type => types.has(type)).map(type => BACKUP_TYPE_LABELS[type]).join('+');
-    anchor.download = `NAI镜头台备份_${typeLabel}_${rangeLabel}.json`;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    closeDialog('backupDialog');
-    toast(`已备份 ${packed.length} 张图片、${payload.recipes.length} 份配方、${payload.characters.length} 个人物、${payload.words.length} 个词条和 ${payload.vibeRecords.length} 份 Vibe`);
-  } catch (error) {
-    toast(`备份失败：${error.message}`);
-  }
-};
 
 $('importBtn').onclick = () => $('importFile').click();
 function mergeCharacterRevision(existing, incoming) {
@@ -228,6 +162,7 @@ function mergeRecord(existing, incoming, type = '') {
   if (type === 'collection' && Number.isSafeInteger(incoming.manualOrder) && (existing.manualOrder === undefined || existing.transferId && existing.transferId === incoming.transferId && Number(incoming.updatedAt) > Number(existing.updatedAt))) merged.manualOrder = incoming.manualOrder;
   if (type === 'recipe' && !merged.coverArtworkId && incoming.coverArtworkId) merged._incomingCoverArtworkId = incoming.coverArtworkId;
   if (type === 'artwork') {
+    if (Array.isArray(existing.exampleWordIds) || Array.isArray(incoming.exampleWordIds)) merged.exampleWordIds = [...new Set([...(Array.isArray(existing.exampleWordIds) ? existing.exampleWordIds : []), ...(Array.isArray(incoming.exampleWordIds) ? incoming.exampleWordIds : [])])];
     if (!Array.isArray(existing.wordSources) && Array.isArray(incoming.wordSources)) merged.wordSources = incoming.wordSources;
     merged.characterIds = [...new Set([...artworkCharacterIds(existing), ...artworkCharacterIds(incoming)])];
     merged.characterId = merged.characterIds[0] || '';
@@ -342,14 +277,15 @@ async function analyzeBackupImport(data) {
   for (const artwork of data.artworks) if(Array.isArray(artwork.vibes)) artwork.vibes = artwork.vibes.map(item => ({...item,id:vibeRecords.idMap.get(String(item.id))||item.id}));
   for (const recipe of data.recipes) if(Array.isArray(recipe.defaultParams?.vibes)) recipe.defaultParams.vibes = recipe.defaultParams.vibes.map(item => ({...item,id:vibeRecords.idMap.get(String(item.id))||item.id}));
   const existingRecipes = await dbAll('recipes');
-  const existingArtworks = await dbAll('artworks');
+  const existingArtworks = await backupArtworkMetadata();
   const existingWords = words();
   const existingCharacters = characters();
   const characterPlan = prepareRecordPlan(data.characters, existingCharacters, characterContentKey, 'character');
   const recipePlan = prepareRecordPlan(data.recipes, existingRecipes, recipeContentKey, 'recipe');
   const wordPlan = prepareRecordPlan(data.words, existingWords, wordContentKey, 'word');
-  for (const artwork of data.artworks) if (Array.isArray(artwork.wordSources)) {
-    artwork.wordSources = artwork.wordSources.filter(source => source && typeof source.content === 'string').map(source => ({ ...source, wordId: wordPlan.idMap.get(String(source.wordId)) || '' }));
+  for (const artwork of data.artworks) {
+    if (Array.isArray(artwork.wordSources)) artwork.wordSources = artwork.wordSources.filter(source => source && typeof source.content === 'string').map(source => ({ ...source, wordId: wordPlan.idMap.get(String(source.wordId)) || '' }));
+    if (Array.isArray(artwork.exampleWordIds)) artwork.exampleWordIds = artwork.exampleWordIds.map(id => wordPlan.idMap.get(String(id))).filter(Boolean);
   }
   const artworkIdMap = new Map();
   const additions = [];
@@ -357,8 +293,10 @@ async function analyzeBackupImport(data) {
   let skipped = 0;
   const byHash = new Map();
   for (const item of existingArtworks) {
-    const hash = await blobFingerprint(item.blob);
-    byHash.set(hash, item);
+    const cached = crypto.subtle ? /^[a-f0-9]{64}$/.test(item.contentHash || '') : /^fnv-/.test(item.contentHash || '');
+    const hash = cached ? item.contentHash : await blobFingerprint((await dbGet('artworks', item.id)).blob);
+    const { _backupBlobSize, ...record } = item;
+    byHash.set(hash, record);
   }
   for (const source of data.artworks) {
     const blob = await b64Blob(source.blob);
@@ -370,9 +308,11 @@ async function analyzeBackupImport(data) {
         if (matched._oldIds) matched._oldIds.push(oldKey);
         else artworkIdMap.set(oldKey, matched.id);
       }
-      const mappedSource = { ...source, characterIds: artworkCharacterIds(source).map(id => characterPlan.idMap.get(String(id)) || id), blob: matched.blob, contentHash: hash };
+      const mappedSource = { ...source, characterIds: artworkCharacterIds(source).map(id => characterPlan.idMap.get(String(id)) || id), blob, contentHash: hash };
       const merged = mergeRecord(matched, mappedSource, 'artwork');
       if (merged.changed) {
+        merged.record.blob = matched.blob || blob;
+        merged.record.contentHash = hash;
         Object.assign(matched, merged.record);
         if (!matched._oldIds && !merges.includes(matched)) merges.push(matched);
       }
@@ -492,6 +432,8 @@ function showRestorePreview(data, plan) {
   $('restorePreviewDetail').textContent = `新增：${plan.stats.artworkCount} 张图片、${plan.stats.recipeCount} 份配方、${plan.stats.characterCount} 个人物、${plan.stats.wordCount} 个词条。更新/补全：图片 ${plan.stats.artworkMerged}、配方 ${plan.stats.recipeMerged}、人物 ${plan.stats.characterMerged}、散词 ${plan.stats.wordMerged}。跳过重复：图片 ${plan.stats.artworkSkipped}、配方 ${plan.stats.recipeSkipped}、人物 ${plan.stats.characterSkipped}、散词 ${plan.stats.wordSkipped}${plan.stats.conflicts ? `。另有 ${plan.stats.conflicts} 个编号冲突会保留为新记录` : ''}`;
   showDialog('restorePreviewDialog');
   $('restorePreviewDetail').textContent += `。Vibe 素材/组合：${plan.stats.vibeCount || 0} 项。同一人物采用修改时间较新的版本；时间相同或缺失时保留本地内容`;
+  const part = data.backupSet;
+  if (Number.isSafeInteger(part?.index) && Number.isSafeInteger(part?.total) && part.index > 0 && part.index <= part.total && part.total > 1) $('restorePreviewDetail').textContent += `。这是第 ${part.index}/${part.total} 份备份，请继续逐份导入其余文件`;
 }
 
 $('cancelRestorePreview').onclick = () => { pendingBackupImport = null; closeDialog('restorePreviewDialog'); };

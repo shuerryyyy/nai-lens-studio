@@ -750,6 +750,7 @@ async function refreshData() {
   renderRecipeOptions();
   renderRecipes();
   renderImageLibrary();
+  renderWords();
 }
 
 function renderRecipeOptions() {
@@ -933,7 +934,9 @@ function currentWordSourceIndex() {
   return wordSourceIndex;
 }
 function promptContainsWord(prompt, content, explicit = false) {
-  const haystack = normalizedWordPrompt(prompt), needle = normalizedWordPrompt(content);
+  return normalizedPromptContainsWord(normalizedWordPrompt(prompt), normalizedWordPrompt(content), explicit);
+}
+function normalizedPromptContainsWord(haystack, needle, explicit = false) {
   if (!needle) return false;
   if (haystack === needle) return true;
   // Old images need a substantial complete phrase, not one common tag.
@@ -949,8 +952,9 @@ function trackWordSource(word, field, content, append = false) {
 }
 function inferredWordSources(item) {
   const index = currentWordSourceIndex(), result = [];
+  const prompts = Object.fromEntries(WORD_PROMPT_FIELDS.map(field => [field, normalizedWordPrompt(item[field])]));
   for (const {word, parts} of index) {
-    if (!parts.length || !parts.every(part => promptContainsWord(item[part.field], part.content))) continue;
+    if (!parts.length || !parts.every(part => normalizedPromptContainsWord(prompts[part.field], part.normalized))) continue;
     // Identical contents cannot tell us which entry was used.
     if (parts.some(part => index.some(other => other.word.id !== word.id && other.parts.some(candidate => candidate.field === part.field && candidate.normalized === part.normalized)))) continue;
     for (const part of parts) result.push(snapshotWordSource(word, part.field, part.content));
@@ -1044,6 +1048,7 @@ function setArtworkSelectionMode(enabled) {
   if (!enabled) selectedArtworkIds.clear();
   renderRecipes();
   renderImageLibrary();
+  renderWords();
 }
 
 function toggleArtworkSelection(id) {
@@ -1083,6 +1088,7 @@ function bindBatchBar(root, visibleIds) {
     ids.forEach(id => shouldSelect ? selectedArtworkIds.add(id) : selectedArtworkIds.delete(id));
     renderRecipes();
     renderImageLibrary();
+    renderWords();
   };
   root.querySelector('[data-batch-favorite]')?.addEventListener('click', () => batchFavoriteArtworks().catch(error => toast(error.message)));
   root.querySelector('[data-batch-share]')?.addEventListener('click', batchDownloadArtworkJpegs);
@@ -1834,18 +1840,7 @@ function kindName(kind) {
   return ({ scene: '画面描述词', clothing: '服装', artist: '画师串', positive: '正面词', negative: '负面词', bundle: '整套配方' })[kind] || '散词';
 }
 
-function renderWords() {
-  const query = $('wordSearch').value.trim().toLowerCase();
-  const filter = $('wordFilter').value;
-  const list = words().filter(word => {
-    const bundle = word.kind === 'bundle' ? bundleData(word) : {};
-    return (!filter || word.kind === filter) && (!query || [
-      word.name, word.content, bundle.artistPrompt, bundle.positivePrompt, bundle.negativePrompt,
-      word.category, word.author, word.note, word.sourceUrl, ...(word.tags || [])
-    ].join(' ').toLowerCase().includes(query));
-  });
-  renderAuthorSelection('words', list.map(word => word.id));
-  $('wordList').innerHTML = list.length ? list.map(word => {
+function wordRowHTML(word) {
     const bundle = word.kind === 'bundle' ? bundleData(word) : null;
     const summary = bundle
       ? `<div class="word-summary"><span>画师：${escapeHTML(bundle.artistPrompt || '—')}</span><span>正面：${escapeHTML(bundle.positivePrompt || '—')}</span><span>负面：${escapeHTML(bundle.negativePrompt || '—')}</span></div>`
@@ -1858,8 +1853,38 @@ function renderWords() {
       ? `<div class="word-provenance">${word.author ? `<span title="${escapeHTML(word.author)}">作者：${escapeHTML(word.author)}</span>` : ''}${word.note ? `<span title="${escapeHTML(word.note)}">备注：${escapeHTML(word.note)}</span>` : ''}${safeSource ? `<a class="source-link" href="${escapeHTML(safeSource)}" target="_blank" rel="noopener noreferrer">打开来源</a>` : word.sourceUrl ? `<span>来源：${escapeHTML(word.sourceUrl)}</span>` : ''}</div>`
       : '';
     return `<article class="word-row${authorSelections.words.active ? ' word-selection-mode' : ''}${authorSelections.words.active && authorSelections.words.ids.has(String(word.id)) ? ' selected' : ''}${expandedWordId === String(word.id) ? ' expanded' : ''}">${authorSelections.words.active ? `<label class="word-bulk-select"><input type="checkbox" data-word-select="${escapeHTML(word.id)}" aria-label="选择${escapeHTML(word.name)}" ${authorSelections.words.ids.has(String(word.id)) ? 'checked' : ''}></label>` : ''}<button class="word-mobile-summary" data-word-expand="${escapeHTML(word.id)}" type="button" ${authorSelections.words.active ? `aria-pressed="${authorSelections.words.ids.has(String(word.id))}"` : `aria-expanded="${expandedWordId === String(word.id)}"`}><span><b>${escapeHTML(word.name)}</b> · ${kindName(word.kind)}</span><span>${authorSelections.words.active ? (authorSelections.words.ids.has(String(word.id)) ? '已选择' : '未选择') : expandedWordId === String(word.id) ? '收起' : '展开'}</span></button><div class="word-row-details"><div class="word-kind"><span class="kind-dot ${word.kind}"></span>${kindName(word.kind)}</div><div class="word-content"><b>${escapeHTML(word.name)}</b>${summary}${provenance}</div><div class="word-actions">${recordTimeButton(word)}${copyActions}<button class="icon-btn${word.favorite ? ' favorite-active' : ''}" data-word-favorite="${escapeHTML(word.id)}" type="button" aria-label="${word.favorite ? '取消收藏' : '收藏'}${escapeHTML(word.name)}" aria-pressed="${Boolean(word.favorite)}">${icon('star')}</button><button class="secondary" data-word-use="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">使用</button><button class="secondary" data-word-edit="${escapeHTML(word.id)}" type="button" style="padding:7px 10px">修改</button><button class="icon-btn" data-word-del="${escapeHTML(word.id)}" type="button" aria-label="删除${escapeHTML(word.name)}">${icon('trash')}</button></div></div></article>`;
-  }).join('') : '<div class="empty"><div><b>散词库还是空的</b><span>保存单独词条，或用结构化表单保存整套配方。</span></div></div>';
-  if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('words', list, $('wordList'), '.word-row');
+
+}
+
+function renderWords() {
+  const gallery = wordLibraryFormat() === 'gallery';
+  resetWordGalleryInspector();
+  $('wordGalleryLayout').classList.toggle('gallery-layout', gallery);
+  if (!gallery) {
+    releaseWordGalleryUrls();
+    wordGalleryArtworks = null;
+    wordGallerySourceIndex = null;
+    wordGalleryImages.clear();
+  }
+  const query = $('wordSearch').value.trim().toLowerCase();
+  const filter = $('wordFilter').value;
+  const list = words().filter(word => {
+    const bundle = word.kind === 'bundle' ? bundleData(word) : {};
+    return (!filter || word.kind === filter) && (!query || [
+      word.name, word.content, bundle.artistPrompt, bundle.positivePrompt, bundle.negativePrompt,
+      word.category, word.author, word.note, word.sourceUrl, ...(word.tags || [])
+    ].join(' ').toLowerCase().includes(query));
+  });
+  renderAuthorSelection('words', list.map(word => word.id));
+  $('wordList').className = gallery ? 'recipe-grid word-gallery' : 'word-list';
+  if (gallery) renderWordGallery(list);
+  else $('wordList').innerHTML = list.length ? list.map(wordRowHTML).join('') : '<div class="empty"><div><b>散词库还是空的</b><span>保存单独词条，或用结构化表单保存整套配方。</span></div></div>';
+  if (typeof groupRenderedLibrary === 'function') groupRenderedLibrary('words', list, $('wordList'), gallery ? '.word-gallery-card' : '.word-row');
+  if (gallery) renderWordGalleryInspector(list);
+  bindWordActions();
+}
+
+function bindWordActions() {
   document.querySelectorAll('[data-word-copy]').forEach(button => button.onclick = () => {
     const word = words().find(item => item.id === button.dataset.wordCopy);
     copyText(word?.content || '', button);
