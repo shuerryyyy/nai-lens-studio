@@ -1,8 +1,8 @@
 请根据我随后提供的服务商公开接口文档，为NAI镜头台生成一个可导入的JSON适配文件。只输出单个JSON文件，不要Markdown代码围栏。
 规范版本1：单次POST文生图请求；不支持脚本、表达式、流式、排队轮询、签名计算、Vibe或重试。n/n_samples如有，必须为常量1；action如有，必须为常量generate。若文档需要这些功能，或无法确认负面词/Guidance/采样器/Seed等必要字段，请先说明不支持或缺失的信息，不要猜测或假称已验证。不要索取、包含或编造API密钥。
 allowedUrls必须是文档中的完整接口地址（无账号、查询、片段、通配符），工具不会自动拼接或重写地址。auth只描述Bearer或自定义认证头，密钥由工具输入。
-request.fields逐项将source映射到target。source可用：model, fullPrompt, negativePrompt, scenePrompt, characterPrompt, clothingPrompt, artistPrompt, positivePrompt, size, width, height, steps, scale, sampler, seed, noiseSchedule, transparentBg。width/height从size拆分；fullPrompt是完整拼接正向词。type为string/number/integer/boolean。可用map对模型名等做明确的值映射，缺失值会报错，不会静默回退。常量用value，不能同时出现source。target是点分对象路径，不支持数组写入。
-必须映射model/fullPrompt/negativePrompt/steps/scale/sampler/seed/noiseSchedule，并映射size或width+height，避免生成时静默漏参。若站点不支持必要字段，请说明，不能省略后伪装支持。JSON大小64KB内，字段路径最深8层，禁止__proto__/prototype/constructor和请求体密钥字段。
+request.fields逐项将source映射到target。source可用：model, fullPrompt, negativePrompt, scenePrompt, characterPrompt, clothingPrompt, artistPrompt, positivePrompt, size, width, height, steps, scale, sampler, seed, noiseSchedule, transparentBg, varietyPlus, skipCfgAboveSigma。width/height从size拆分；fullPrompt是完整拼接正向词。type为string/number/integer/boolean。可用map对模型名等做明确的值映射，缺失值会报错，不会静默回退。常量用value，不能同时出现source。target是点分对象路径，不支持数组写入。
+必须映射model/fullPrompt/negativePrompt/steps/scale/sampler/seed/noiseSchedule，并映射size或width+height，避免生成时静默漏参。若站点不支持必要字段，请说明，不能省略后伪装支持。Variety+可选source为varietyPlus（boolean开关）或skipCfgAboveSigma（number，已按模型和尺寸计算；关闭时省略该映射字段）。仅在站点文档确认支持时映射，开启但缺少映射会阻止请求。JSON大小64KB内，字段路径最深8层，禁止__proto__/prototype/constructor和请求体密钥字段。
 response.format为json/image/zip。json须提供imagePath（数组下标用点，如data.0.b64_json）和encoding（base64或url；url也允许data:image）。非JSON不写imagePath和encoding。不会自动尝试多种请求或收费重试。
 不要同时堆叠size、width/height及多层尺寸字段；只使用文档明确要求的位置。负面词必须完整映射自negativePrompt，不得改写、补预设或把它替换成常量。不得用不相关模型的规范推断NAI协议。导入后可用“本地检查适配”检查当前模型和值映射；此操作不访问接口，也不能证明服务端采用了参数。
 以下JSON Schema是结构规范，工具还会执行上述语义校验。导入通过只表示格式可读取，效果需返回原图核对。
@@ -178,7 +178,9 @@ response.format为json/image/zip。json须提供imagePath（数组下标用点�
                 "sampler",
                 "seed",
                 "noiseSchedule",
-                "transparentBg"
+                "transparentBg",
+                "varietyPlus",
+                "skipCfgAboveSigma"
               ]
             },
             "type": {

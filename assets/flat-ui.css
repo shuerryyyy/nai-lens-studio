@@ -99,6 +99,10 @@ html[data-theme] .recipe-context {background:transparent;border:0;border-bottom:
 .advanced {padding-top:20px;margin-top:24px}
 .advanced summary {font-size:13px}
 .advanced-summary b {font-size:12px}
+.variety-control {align-items:center;margin-top:0;min-height:44px;padding:11px 12px;border:1px solid var(--line);border-radius:var(--control-radius);background:var(--input);color:var(--ink);font-size:14px;cursor:pointer}
+.variety-control input {flex-shrink:0;margin:0}
+.variety-control:has(input:checked) {border-color:var(--signal)}
+.variety-control:has(input:disabled) {color:var(--muted);cursor:not-allowed}
 .primary,.secondary,.danger-btn {border-radius:var(--control-radius);font-weight:500;box-shadow:none}
 .primary {background:var(--signal);color:var(--action-text)}
 .secondary {background:transparent;border:1px solid var(--line);color:var(--ink)}

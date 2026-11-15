@@ -95,6 +95,7 @@ $('imageImportForm').onsubmit = async event => {
     model: metadata.model || 'unknown', size: metadata.size || '', steps: metadata.steps || '',
     scale: metadata.scale ?? '', seed: metadata.seed || '', sampler: metadata.sampler || '',
     noiseSchedule: metadata.noiseSchedule || '', recipeId,
+    varietyPlus: metadata.varietyPlus,
     category: recipe?.name || '未分类', tags: [], blob: importing.file,
     imported: true, importedAt: Date.now(), createdAt: Date.now(), rawMetadata: metadata.raw || {},
     ...(importing.targetWordId ? { exampleWordIds: [importing.targetWordId] } : {})

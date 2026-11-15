@@ -50,7 +50,7 @@ const WORD_KINDS = ['scene', 'clothing', 'artist', 'positive', 'negative', 'bund
 const fields = [
   'scenePrompt', 'clothingPrompt', 'characterPrompt', 'characterSelectIds', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model',
   'size', 'recipeSelect', 'tags', 'steps', 'scale', 'seed', 'sampler',
-  'noiseSchedule', 'transparentBg', 'apiMode', 'endpoint', 'rememberToken', 'gallerySort', 'librarySort'
+  'noiseSchedule', 'varietyPlus', 'transparentBg', 'apiMode', 'endpoint', 'rememberToken', 'gallerySort', 'librarySort'
 ];
 
 function toast(message) {
@@ -139,7 +139,7 @@ function makeId() {
 }
 
 function samplerName(value = '') {
-  return ({ k_euler_ancestral: 'Euler A', k_euler: 'Euler', k_dpmpp_2m: 'DPM++ 2M' })[value] || value;
+  return ({ k_euler_ancestral: 'Euler A', k_euler: 'Euler', k_dpmpp_2s_ancestral: 'DPM++ 2S A', k_dpmpp_2m_sde: 'DPM++ 2M SDE', k_dpmpp_2m: 'DPM++ 2M', k_dpmpp_sde: 'DPM++ SDE' })[value] || value;
 }
 
 function shortModel(model = '') {
@@ -254,7 +254,9 @@ function resetSeedForSource(source = {}, keepPrevious = true) {
 }
 
 function updateAdvancedSummary() {
-  $('advancedSummary').textContent = `${$('steps').value || 28} Steps · Guidance ${$('scale').value || 7} · ${samplerName($('sampler').value)} · ${$('noiseSchedule').value || 'karras'}`;
+  const variety = varietySupported($('model').value) && $('varietyPlus').checked;
+  $('varietyState').textContent = $('varietyPlus').disabled ? '当前模型不支持' : variety ? '已开启' : '已关闭';
+  $('advancedSummary').textContent = `${$('steps').value || 28} Steps · Guidance ${$('scale').value || 7} · ${samplerName($('sampler').value)} · ${$('noiseSchedule').value || 'karras'}${variety ? ' · Variety+' : ''}`;
 }
 
 let characterNegativeSuffix = '';
@@ -477,6 +479,7 @@ function updateModelUI() {
     : (model.includes('4-5') ? 'V4.5 · 兼容传统 TAG 与角色提示' : model.includes('diffusion-4-') ? 'V4 · 多角色与 Vibe 参考' : 'Anime V3 · 传统标签模型');
   $('steps').disabled = isMedium;
   $('sampler').disabled = isMedium;
+  $('varietyPlus').disabled = !varietySupported(model);
   $('negativePrompt').disabled = isMedium;
   $('modelConstraintNote').hidden = !isMedium;
   if (isMedium) {
@@ -737,7 +740,7 @@ async function migrateLegacyData() {
 
 function pickParams(source = {}) {
   const result = {};
-  ['model', 'size', 'steps', 'scale', 'sampler', 'noiseSchedule', 'transparentBg', 'vibes'].forEach(key => {
+  ['model', 'size', 'steps', 'scale', 'sampler', 'noiseSchedule', 'varietyPlus', 'transparentBg', 'vibes'].forEach(key => {
     if (source[key] !== undefined) result[key] = source[key];
   });
   return result;
@@ -840,6 +843,7 @@ function openRecipeEditor(recipe = null, prefillCurrent = false) {
   $('recipeScale').value = params.scale ?? '';
   $('recipeModel').value = params.model || '';
   $('recipeSampler').value = params.sampler || 'k_euler_ancestral';
+  $('recipeVarietyPlus').value = typeof params.varietyPlus === 'boolean' ? String(params.varietyPlus) : '';
   showDialog('recipeDialog');
   setTimeout(() => $('recipeName').focus(), 50);
 }
@@ -878,7 +882,8 @@ $('recipeForm').onsubmit = async event => {
       model: $('recipeModel').value || undefined,
       scale: $('recipeScale').value.trim() === '' ? undefined : Number($('recipeScale').value),
       steps: Number($('recipeSteps').value) || 28,
-      sampler: $('recipeSampler').value
+      sampler: $('recipeSampler').value,
+      varietyPlus: $('recipeVarietyPlus').value === '' ? undefined : $('recipeVarietyPlus').value === 'true'
     }
   };
   await dbPut('recipes', recipe);
@@ -1456,6 +1461,8 @@ function reportedImageValues(metadata) {
   if (typeof raw.sampler === 'string' && raw.sampler) result.sampler = raw.sampler;
   const noise = raw.noise_schedule ?? raw.noiseSchedule;
   if (typeof noise === 'string' && noise) result.noiseSchedule = noise;
+  const variety = readVarietyPlus(raw);
+  if (variety !== undefined) result.varietyPlus = variety;
   return result;
 }
 function returnedImageValues(blob) {
@@ -1483,7 +1490,8 @@ async function showReturnedImageValues(item) {
     const params = [
       'steps' in values ? values.steps + ' Steps' : '', 'scale' in values ? 'Guidance ' + values.scale : '',
       values.sampler ? samplerName(values.sampler) : '', values.noiseSchedule || '',
-      'seed' in values ? 'Seed ' + values.seed : ''
+      'seed' in values ? 'Seed ' + values.seed : '',
+      'varietyPlus' in values ? 'Variety+ ' + (values.varietyPlus ? '开启' : '关闭') : ''
     ].filter(Boolean);
     host.innerHTML = '<header><b>图片记录的负面词</b><button class="copy-btn" type="button" data-returned-negative-copy aria-label="复制图片记录的负面词" ' + (hasNegative && values.negativePrompt ? '' : 'disabled') + '>' + icon('copy') + '</button></header>'
       + '<p class="returned-record-note" role="status">' + note + '</p>'
@@ -1508,7 +1516,9 @@ function openImageDialog(item) {
   const people = artworkCharacterNames(item);
   $('imageParameterStrip').innerHTML = [
     ...people.map(name => `人物：${name}`), shortModel(item.model || '未知模型'), item.size || '未知尺寸',
-    item.steps ? `${item.steps} Steps` : '', item.sampler ? samplerName(item.sampler) : ''
+    item.steps ? `${item.steps} Steps` : '', item.sampler ? samplerName(item.sampler) : '',
+    item.scale !== undefined && item.scale !== '' ? `Guidance ${item.scale}` : '',
+    typeof item.varietyPlus === 'boolean' ? `Variety+ ${item.varietyPlus ? '开启' : '关闭'}` : ''
   ].filter(Boolean).map(value => `<span class="chip">${escapeHTML(value)}</span>`).join('');
   const promptRows = [
     ['画面描述', item.scenePrompt || item.sourcePrompt], ['人物提示词', item.characterPrompt],
@@ -1695,6 +1705,7 @@ function reuseArtwork(item) {
   $('tags').value = (item.tags || []).join(', ');
   setSelectedCharacterIds(inferredArtworkCharacterIds(item));
   $('transparentBg').checked = Boolean(item.transparentBg);
+  $('varietyPlus').checked = item.varietyPlus === true;
   $('recipeSelect').value = item.recipeId || '';
   updateActiveRecipeLabel();
   updateModelUI();
@@ -2071,6 +2082,7 @@ $('testPresetBtn').onclick = () => {
   $('scale').value = '7';
   $('sampler').value = 'k_euler_ancestral';
   $('noiseSchedule').value = 'karras';
+  $('varietyPlus').checked = false;
   if (!$('scenePrompt').value.trim()) $('scenePrompt').value = '1girl, simple background';
   updateModelUI();
   saveSettings();

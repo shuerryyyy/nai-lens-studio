@@ -1,6 +1,19 @@
 'use strict';
 /* Request construction, response validation and the user-triggered generation flow. */
 
+function varietySupported(model = '') {
+  return /^nai-diffusion-(?:3$|4-)/.test(model);
+}
+
+function varietySigma(meta) {
+  if (!meta.varietyPlus) return 0;
+  if (!varietySupported(meta.model)) throw new Error('当前模型不支持 Variety+，请关闭后再生成。');
+  const [width, height] = (meta.size || '').split('x').map(Number);
+  if (![width, height].every(value => Number.isFinite(value) && value >= 8)) throw new Error('Variety+ 需要有效的图片尺寸。');
+  // Match NovelAI's model threshold and latent-area scaling (832 × 1216 baseline).
+  return (meta.model.startsWith('nai-diffusion-4-5-') ? 58 : 19) * Math.sqrt(Math.floor(width / 8) * Math.floor(height / 8) / (104 * 152));
+}
+
 function collectMeta() {
   const recipe = recipesCache.find(item => item.id === $('recipeSelect').value);
   const isMedium = $('model').value === 'nai-diffusion-5-full-medium';
@@ -20,6 +33,7 @@ function collectMeta() {
     steps: isMedium ? 14 : Number($('steps').value) || 28, scale: $('scale').value.trim() === '' ? 7 : Number($('scale').value),
     seed: $('seed').value.trim(), sampler: isMedium ? 'k_euler_ancestral' : $('sampler').value,
     noiseSchedule: $('noiseSchedule').value, transparentBg: $('transparentBg').checked,
+    varietyPlus: varietySupported($('model').value) && $('varietyPlus').checked,
     provider: $('apiMode').value,
     vibes: vibeSupported($('model').value) ? structuredClone(vibeSelection.filter(item => item.enabled !== false)) : []
   };
@@ -41,6 +55,7 @@ function naiRequest(meta) {
       params_version: isV5 ? 4 : 3, width, height, scale: meta.scale, sampler: meta.sampler,
       steps: meta.steps, n_samples: 1, seed, negative_prompt: meta.negativePrompt,
       noise_schedule: meta.noiseSchedule, qualityToggle: true, ucPreset: 0, legacy: false,
+      ...(meta.varietyPlus ? { skip_cfg_above_sigma: varietySigma(meta) } : {}),
       use_coords: false, v4_prompt: { caption: caption(meta.fullPrompt), use_coords: false, use_order: true },
       v4_negative_prompt: { caption: caption(meta.negativePrompt), use_coords: false, use_order: false },
       ...(isV5 ? {
@@ -75,6 +90,7 @@ function proxyRequest(meta, endpoint = $('endpoint').value.trim()) {
   if (isYesNaiImagesEndpoint(endpoint)) {
     // YesNAI /docs: NAI settings belong inside nai, not the OpenAI top level.
     const parameters = {
+      ...(meta.varietyPlus ? { skip_cfg_above_sigma: varietySigma(meta) } : {}),
       ...(meta.transparentBg ? { transparent_background: true } : {}),
       ...vibeRequestFields(meta)
     };
@@ -94,6 +110,7 @@ function proxyRequest(meta, endpoint = $('endpoint').value.trim()) {
     model: meta.model, prompt: meta.fullPrompt, negative_prompt: meta.negativePrompt,
     size: meta.size, n: 1, steps: meta.steps, scale: meta.scale,
     sampler: meta.sampler, seed: isAuroraImagesEndpoint(endpoint) ? String(meta.seed) : Number(meta.seed), noise_schedule: meta.noiseSchedule,
+    ...(meta.varietyPlus ? { skip_cfg_above_sigma: varietySigma(meta) } : {}),
     ...(meta.transparentBg ? { transparent_background: true } : {}),
     ...vibeRequestFields(meta)
   };

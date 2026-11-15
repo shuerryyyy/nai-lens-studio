@@ -110,6 +110,17 @@ function normalizeModel(value = '') {
   return model.includes('v3') || model.includes('diffusion-3') ? 'nai-diffusion-3' : '';
 }
 
+function readVarietyPlus(raw) {
+  for (const key of ['skip_cfg_above_sigma', 'skipCfgAboveSigma']) {
+    if (!Object.hasOwn(raw, key)) continue;
+    const value = raw[key];
+    if (value === null) return false;
+    if ((typeof value === 'number' || typeof value === 'string' && value.trim()) && Number.isFinite(Number(value)) && Number(value) >= 0) return Number(value) > 0;
+  }
+  for (const key of ['varietyPlus', 'variety_plus']) if (typeof raw[key] === 'boolean') return raw[key];
+  return undefined;
+}
+
 function extractNovelAIMetadata(png) {
   const json = flattenImageMetadata(png.text);
   const prompt = metadataText(json.prompt, json.input, json.description, json.v4_prompt?.caption?.base_caption, json.Description, png.text.Description, png.text.description);
@@ -124,6 +135,7 @@ function extractNovelAIMetadata(png) {
     negativePrompt: negative, model, size: width && height ? `${width}x${height}` : '',
     steps: Number(json.steps) || 28, scale: Number.isFinite(scale) ? scale : 7,
     seed: json.seed !== undefined ? String(json.seed) : '', sampler: json.sampler || 'k_euler_ancestral',
+    varietyPlus: readVarietyPlus(json),
     noiseSchedule: json.noise_schedule || json.noiseSchedule || 'karras', raw: { ...png.text, parsed: json }
   };
 }

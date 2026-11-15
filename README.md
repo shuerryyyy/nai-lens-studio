@@ -18,9 +18,15 @@
 
 ### 下载单文件版
 
-[下载 v2.29 单文件版](download/nai-lens-studio-v2.29-standalone.html)
+[下载 v2.30 单文件版](download/nai-lens-studio-v2.30-standalone.html)
 
 下载后直接用浏览器打开即可。单文件版已经内嵌主程序、ZIP 解析组件和标题字体，适合保存到电脑或发送到手机使用。
+
+## v2.30 采样器与 Variety+
+
+创作台和配方档案新增 DPM++ 2S A、DPM++ 2M SDE、DPM++ SDE，共六种采样器。进阶参数中保留 Guidance 名称并提供中文说明。Variety+ 位于噪声调度右侧，可让构图和姿势有更多变化，默认关闭，支持 V3、V4 和 V4.5。
+
+配方可保存 Variety+ 状态，图片带回创作台时会恢复档案中的设置。第三方接口需支持对应参数。使用导入的适配文件时，开启 Variety+ 需要[配置相应映射](adapters/README.md#v230-variety)。
 
 ## v2.29 散词图文与大备份
 

@@ -4,8 +4,8 @@
   const KEY = 'nai_studio_adapters_v1';
   const LIMIT = 64 * 1024;
   const BAD = new Set(['__proto__', 'constructor', 'prototype']);
-  const SOURCES = ['model','fullPrompt','negativePrompt','scenePrompt','characterPrompt','clothingPrompt','artistPrompt','positivePrompt','size','width','height','steps','scale','sampler','seed','noiseSchedule','transparentBg'];
-  const LABELS = {model:'模型',fullPrompt:'完整正向词',negativePrompt:'负面词',scenePrompt:'画面描述',characterPrompt:'人物词',clothingPrompt:'服装',artistPrompt:'画师串',positivePrompt:'固定正面词',size:'尺寸',width:'宽度',height:'高度',steps:'步数',scale:'Guidance',sampler:'采样器',seed:'Seed',noiseSchedule:'噪声调度',transparentBg:'透明背景'};
+  const SOURCES = ['model','fullPrompt','negativePrompt','scenePrompt','characterPrompt','clothingPrompt','artistPrompt','positivePrompt','size','width','height','steps','scale','sampler','seed','noiseSchedule','transparentBg','varietyPlus','skipCfgAboveSigma'];
+  const LABELS = {model:'模型',fullPrompt:'完整正向词',negativePrompt:'负面词',scenePrompt:'画面描述',characterPrompt:'人物词',clothingPrompt:'服装',artistPrompt:'画师串',positivePrompt:'固定正面词',size:'尺寸',width:'宽度',height:'高度',steps:'步数',scale:'Guidance',sampler:'采样器',seed:'Seed',noiseSchedule:'噪声调度',transparentBg:'透明背景',varietyPlus:'Variety+',skipCfgAboveSigma:'Variety+ 阈值'};
   const TYPES = ['string','number','integer','boolean'];
   const PROMPT_SOURCES = ['fullPrompt','negativePrompt','scenePrompt','characterPrompt','clothingPrompt','artistPrompt','positivePrompt'];
   const $ = id => document.getElementById(id);
@@ -132,10 +132,12 @@
   }
   function build(config, meta) {
     config = validate(config);
+    if (meta.varietyPlus && !config.request.fields.some(field => ['varietyPlus','skipCfgAboveSigma'].includes(field.source))) fail('这个适配文件没有 Variety+ 映射，请关闭 Variety+ 或补充映射');
     const dimensions = /^([0-9]+)x([0-9]+)$/.exec(meta.size || '');
-    const source = { ...meta, width: dimensions ? Number(dimensions[1]) : undefined, height: dimensions ? Number(dimensions[2]) : undefined };
+    const source = { ...meta, varietyPlus: meta.varietyPlus === true, skipCfgAboveSigma: varietySigma(meta), width: dimensions ? Number(dimensions[1]) : undefined, height: dimensions ? Number(dimensions[2]) : undefined };
     const body = Object.create(null);
     for (const field of config.request.fields) {
+      if (field.source === 'skipCfgAboveSigma' && !source.varietyPlus) continue;
       let value = field.value;
       if (Object.hasOwn(field,'source')) {
         value = source[field.source];
@@ -256,7 +258,7 @@
       + '规范版本1：单次POST文生图请求；不支持脚本、表达式、流式、排队轮询、签名计算、Vibe或重试。n/n_samples如有，必须为常量1；action如有，必须为常量generate。若文档需要这些功能，或无法确认负面词/Guidance/采样器/Seed等必要字段，请先说明不支持或缺失的信息，不要猜测或假称已验证。不要索取、包含或编造API密钥。\n'
       + 'allowedUrls必须是文档中的完整接口地址（无账号、查询、片段、通配符），工具不会自动拼接或重写地址。auth只描述Bearer或自定义认证头，密钥由工具输入。\n'
       + 'request.fields逐项将source映射到target。source可用：'+SOURCES.join(', ')+'。width/height从size拆分；fullPrompt是完整拼接正向词。type为string/number/integer/boolean。可用map对模型名等做明确的值映射，缺失值会报错，不会静默回退。常量用value，不能同时出现source。target是点分对象路径，不支持数组写入。\n'
-      + '必须映射model/fullPrompt/negativePrompt/steps/scale/sampler/seed/noiseSchedule，并映射size或width+height，避免生成时静默漏参。若站点不支持必要字段，请说明，不能省略后伪装支持。JSON大小64KB内，字段路径最深8层，禁止__proto__/prototype/constructor和请求体密钥字段。\n'
+      + '必须映射model/fullPrompt/negativePrompt/steps/scale/sampler/seed/noiseSchedule，并映射size或width+height，避免生成时静默漏参。若站点不支持必要字段，请说明，不能省略后伪装支持。Variety+可选source为varietyPlus（boolean开关）或skipCfgAboveSigma（number，已按模型和尺寸计算；关闭时省略该映射字段）。仅在站点文档确认支持时映射，开启但缺少映射会阻止请求。JSON大小64KB内，字段路径最深8层，禁止__proto__/prototype/constructor和请求体密钥字段。\n'
       + 'response.format为json/image/zip。json须提供imagePath（数组下标用点，如data.0.b64_json）和encoding（base64或url；url也允许data:image）。非JSON不写imagePath和encoding。不会自动尝试多种请求或收费重试。\n'
       + '不要同时堆叠size、width/height及多层尺寸字段；只使用文档明确要求的位置。负面词必须完整映射自negativePrompt，不得改写、补预设或把它替换成常量。不得用不相关模型的规范推断NAI协议。导入后可用“本地检查适配”检查当前模型和值映射；此操作不访问接口，也不能证明服务端采用了参数。\n'
       + '以下JSON Schema是结构规范，工具还会执行上述语义校验。导入通过只表示格式可读取，效果需返回原图核对。\n'+JSON.stringify(schema(),null,2)
@@ -272,7 +274,7 @@
     for (const id of ['endpoint','apiMode']) $(id).addEventListener('change',render);
     $('importApiAdapter').onclick = () => $('apiAdapterFile').click();
     $('checkApiAdapter').onclick = checkCurrent;
-    for (const id of [...PROMPT_SOURCES.filter(id => $(id)), 'model','size','steps','scale','seed','sampler','noiseSchedule','transparentBg']) $(id).addEventListener('input', () => {
+    for (const id of [...PROMPT_SOURCES.filter(id => $(id)), 'model','size','steps','scale','seed','sampler','noiseSchedule','transparentBg','varietyPlus']) $(id).addEventListener('input', () => {
       if ($('adapterCheckResult').textContent) { $('adapterCheckResult').textContent = '参数已变化，请重新进行本地检查。'; $('adapterCheckPreview').hidden = true; }
     });
     $('apiAdapterFile').onchange = async event => {
