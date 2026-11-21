@@ -233,9 +233,17 @@ document.querySelectorAll('.copy-btn[data-copy]').forEach(button => {
   button.addEventListener('click', () => copyText($(button.dataset.copy).value, button));
 });
 
-function fullPrompt() {
-  return generationPromptOrder().map(id => $(id).value.trim())
-    .filter(Boolean).join(', ');
+let reusedImagePrompt = null;
+
+function orderedPromptParts(separateCharacters = false) {
+  return generationPromptOrder().filter(id => !separateCharacters || id !== 'characterPrompt')
+    .map(id => $(id).value.trim()).filter(Boolean);
+}
+
+function fullPrompt(separateCharacters = false) {
+  const parts = orderedPromptParts(separateCharacters);
+  if (reusedImagePrompt?.raw && JSON.stringify(parts) === reusedImagePrompt.parts) return reusedImagePrompt.raw;
+  return parts.join(', ');
 }
 
 function seedReference(value) {
@@ -263,9 +271,17 @@ let characterNegativeSuffix = '';
 
 function baseNegativePrompt() {
   const value = $('negativePrompt').value;
-  if (!characterNegativeSuffix || !value.endsWith(characterNegativeSuffix)) return value;
-  const base = value.slice(0, -characterNegativeSuffix.length);
-  return characterNegativeSuffix.startsWith(', ') ? base : base.replace(/,\s*$/, '');
+  if (!characterNegativeSuffix) return value;
+  if (value === characterNegativeSuffix || characterNegativeSuffix.startsWith(', ') && value.endsWith(characterNegativeSuffix)) {
+    return value.slice(0, -characterNegativeSuffix.length);
+  }
+  const entries = splitPrompt(value), automatic = splitPrompt(characterNegativeSuffix);
+  for (let index = entries.length - automatic.length; index >= 0; index--) {
+    if (!automatic.every((tag, offset) => entries[index + offset] === tag)) continue;
+    entries.splice(index, automatic.length);
+    return entries.join(', ');
+  }
+  return value;
 }
 
 function selectedPromptCharacters() {
@@ -277,7 +293,9 @@ function selectedPromptCharacters() {
 }
 
 function syncCharacterNegativePrompt(base = baseNegativePrompt()) {
-  const additions = [...new Set(selectedPromptCharacters().map(character => character.negativePrompt?.trim()).filter(value => value && value !== base))].join(', ');
+  const manual = new Set(splitPrompt(base));
+  const additions = [...new Set(selectedPromptCharacters().flatMap(character => splitPrompt(character.negativePrompt)))]
+    .filter(tag => !manual.has(tag)).join(', ');
   characterNegativeSuffix = additions ? `${base ? ', ' : ''}${additions}` : '';
   const element = $('negativePrompt'), value = base + characterNegativeSuffix;
   if (element.value !== value) {
@@ -298,6 +316,7 @@ function saveSettings() {
   });
   data.negativePrompt = negative;
   data.originalSeed = originalSeed;
+  data.reusedImagePrompt = reusedImagePrompt;
   data.adapterId = NaiAdapters.selectedId();
   data.wordSources = collectedWordSources(data);
   trackedWordSources = data.wordSources;
@@ -325,6 +344,7 @@ function loadSettings() {
     else element.value = data[id];
   });
   originalSeed = seedReference(data.originalSeed);
+  reusedImagePrompt = data.reusedImagePrompt && typeof data.reusedImagePrompt.parts === 'string' ? data.reusedImagePrompt : null;
   // Retire seeds remembered by older builds; only later manual input stays fixed.
   if (!Object.prototype.hasOwnProperty.call(data, 'originalSeed')) {
     originalSeed = seedReference(data.seed);
@@ -455,7 +475,7 @@ $('confirmClearData').onclick = async () => {
       catch (error) { tx.abort(); reject(error); }
     });
     collectionsCache = [];
-    Object.keys(localStorage).filter(key => key.startsWith('nai_studio_') || key.startsWith('nai_folder_open_') || key === 'nai_vibe_expanded').forEach(key => localStorage.removeItem(key));
+    Object.keys(localStorage).filter(key => /^(nai_studio_|nai_folder_open_|nai_picker_(view|sort)_)/.test(key) || key === 'nai_vibe_expanded').forEach(key => localStorage.removeItem(key));
     closeDialog('clearDataDialog');
     toast('本机数据已全部清除');
     setTimeout(() => location.reload(), 500);
@@ -794,6 +814,7 @@ function syncArtistRecipe(preferredId = '') {
 
 function applyRecipe(recipe, includeParams = true) {
   if (!recipe) return;
+  reusedImagePrompt = null;
   trackedWordSources = trackedWordSources.filter(source => !['artistPrompt', 'positivePrompt', 'negativePrompt'].includes(source.field));
   $('artistPrompt').value = recipe.artistPrompt || '';
   $('positivePrompt').value = recipe.positivePrompt || '';
@@ -1068,21 +1089,20 @@ async function batchFavoriteArtworks() {
   const items = selectedArtworks();
   if (!items.length) { toast('请先选择图片'); return; }
   const favorite = !items.every(item => item.favorite);
-  await commitRecords({ artworks: items.map(item => ({ ...item, favorite, updatedAt: Date.now() })) });
+  const updated = await changeGalleryArtworks(items.map(item => item.id), () => ({ favorite }));
   await refreshData();
-  toast(favorite ? `已收藏 ${items.length} 张图片` : `已取消收藏 ${items.length} 张图片`);
+  toast(updated.length ? `已${favorite ? '收藏' : '取消收藏'} ${updated.length} 张图片` : '所选图片已不存在');
 }
 
 async function batchDeleteArtworks() {
   const items = selectedArtworks();
   if (!items.length) { toast('请先选择图片'); return; }
   if (!confirm(`永久删除选中的 ${items.length} 张图片？此操作无法撤销。`)) return;
-  const ids = new Set(items.map(item => item.id));
-  await commitRecords({ recipes: recipesCache.filter(item => ids.has(item.coverArtworkId)).map(recipe => ({ ...recipe, coverArtworkId: null, updatedAt: Date.now() })) }, { artworks: [...ids] });
+  const deleted = await changeGalleryArtworks(items.map(item => item.id), null, { remove: true });
   artworkSelectionMode = false;
   selectedArtworkIds.clear();
   await refreshData();
-  toast(`已删除 ${items.length} 张图片`);
+  toast(`已删除 ${deleted.length} 张图片`);
 }
 
 function bindBatchBar(root, visibleIds) {
@@ -1371,7 +1391,7 @@ function bindImageAction(button, id) {
 async function deleteRecipe(recipe) {
   const count = artworksCache.filter(item => item.recipeId === recipe.id).length;
   if (!confirm(`删除配方“${recipe.name}”？其中 ${count} 张图片将不再关联配方，不会删除图片。`)) return;
-  await commitRecords({ artworks: artworksCache.filter(item => item.recipeId === recipe.id).map(artwork => ({ ...artwork, recipeId: '', category: '未分类', updatedAt: Date.now() })) }, { recipes: [recipe.id] });
+  await deleteGalleryRecipe(recipe.id);
   if ($('recipeSelect').value === recipe.id) $('recipeSelect').value = '';
   currentGalleryRecipeId = '';
   $('recipeInspector').className = 'sheet recipe-inspector empty-inspector';
@@ -1400,9 +1420,9 @@ async function deleteLibraryTag(tag) {
   const affected = artworksCache.filter(item => (item.tags || []).includes(tag));
   if (!affected.length) return;
   if (!confirm(`删除图片标签“${tag}”？\n\n它会从 ${affected.length} 张图片中移除，但不会删除图片。`)) return;
-  await commitRecords({ artworks: affected.map(item => ({ ...item, tags: (item.tags || []).filter(value => value !== tag), updatedAt: Date.now() })) });
+  const updated = await changeGalleryArtworks(affected.map(item => item.id), item => ({ tags: (item.tags || []).filter(value => value !== tag) }));
   await refreshData();
-  toast(`已从 ${affected.length} 张图片中删除标签“${tag}”`);
+  toast(`已从 ${updated.length} 张图片中删除标签“${tag}”`);
 }
 
 function restoreLibraryResultsHome() {
@@ -1488,7 +1508,7 @@ async function showReturnedImageValues(item) {
     const same = hasNegative && comparable(values.negativePrompt) === comparable(item.negativePrompt);
     const note = !hasNegative ? '原图没有可读取的负面词记录，无法核实。' : same ? '原图记录与档案保存的负面词一致。' : '原图记录与档案保存的负面词不同；原填写内容已保留。';
     const params = [
-      'steps' in values ? values.steps + ' Steps' : '', 'scale' in values ? 'Guidance ' + values.scale : '',
+      'steps' in values ? '原图记录 ' + values.steps + ' Steps' : '', 'scale' in values ? 'Guidance ' + values.scale : '',
       values.sampler ? samplerName(values.sampler) : '', values.noiseSchedule || '',
       'seed' in values ? 'Seed ' + values.seed : '',
       'varietyPlus' in values ? 'Variety+ ' + (values.varietyPlus ? '开启' : '关闭') : ''
@@ -1514,16 +1534,19 @@ function openImageDialog(item) {
   $('imageDialogPreview').src = imagePreviewUrl;
   $('imageTags').value = (item.tags || []).join(', ');
   const people = artworkCharacterNames(item);
+  const recorded = item.imported && item.rawMetadata?.parsed
+    ? reportedImageValues({ text: { metadata: item.rawMetadata.parsed } }) : item;
   $('imageParameterStrip').innerHTML = [
     ...people.map(name => `人物：${name}`), shortModel(item.model || '未知模型'), item.size || '未知尺寸',
-    item.steps ? `${item.steps} Steps` : '', item.sampler ? samplerName(item.sampler) : '',
-    item.scale !== undefined && item.scale !== '' ? `Guidance ${item.scale}` : '',
+    recorded.steps ? `${item.imported ? '原图记录' : '请求'} ${recorded.steps} Steps` : '', recorded.sampler ? samplerName(recorded.sampler) : '',
+    recorded.scale !== undefined && recorded.scale !== '' ? `Guidance ${recorded.scale}` : '',
     typeof item.varietyPlus === 'boolean' ? `Variety+ ${item.varietyPlus ? '开启' : '关闭'}` : ''
   ].filter(Boolean).map(value => `<span class="chip">${escapeHTML(value)}</span>`).join('');
   const promptRows = [
-    ['画面描述', item.scenePrompt || item.sourcePrompt], ['人物提示词', item.characterPrompt],
+    ['画面描述', item.imported && item.scenePrompt === item.sourcePrompt ? '' : item.scenePrompt],
+    ['人物提示词', item.characterPrompt || imageCharacterCaptions(item.rawMetadata?.parsed).positive.map(caption => caption.char_caption).filter(Boolean).join(', ')],
     ['画师串', item.artistPrompt], ['正面提示词', item.positivePrompt], ['负面提示词', item.negativePrompt],
-    ['服装', item.clothingPrompt]
+    ['服装', item.clothingPrompt], ...(item.sourcePrompt ? [['原图完整正向词', item.sourcePrompt]] : [])
   ];
   $('imagePromptDetails').innerHTML = promptRows.map(([label, value], index) => `<section class="image-prompt-row"><header><b>${label}${index === 4 ? (item.imported === false ? '（当时填写）' : '（档案保存）') : ''}</b><button type="button" class="copy-btn" data-image-prompt-copy="${index}" aria-label="复制${label}" ${value ? '' : 'disabled'}>${icon('copy')}</button></header><p>${escapeHTML(value || '—')}</p></section>`).join('');
   $('imagePromptDetails').querySelectorAll('[data-image-prompt-copy]').forEach(button => button.onclick = () => copyText(promptRows[Number(button.dataset.imagePromptCopy)][1] || '', button));
@@ -1533,8 +1556,9 @@ function openImageDialog(item) {
   $('imageMove').onclick = () => { batchMoveActive = false; $('moveRecipeSelect').value = item.recipeId || ''; showDialog('moveDialog'); };
   $('saveImageTags').onclick = async () => {
     try {
-    const updated = { ...item, tags: splitTags($('imageTags').value), updatedAt: Date.now() };
-    await dbPut('artworks', updated);
+    const tags = splitTags($('imageTags').value);
+    const [updated] = await changeGalleryArtworks([item.id], () => ({ tags }));
+    if (!updated) throw new Error('图片已删除');
     Object.assign(item, updated);
     await refreshData();
     toast('图片标签已保存，现在可以用它搜索');
@@ -1543,7 +1567,15 @@ function openImageDialog(item) {
   $('imageSetCover').onclick = async () => {
     try {
     if (!recipe) return;
-    await dbPut('recipes', { ...recipe, coverArtworkId: item.id, updatedAt: Date.now() });
+    await writeGallery((artworks, recipes, onResult) => {
+      onResult(artworks.get(item.id), artwork => {
+        if (artwork?.recipeId !== recipe.id) throw new Error('图片已移走或删除');
+        onResult(recipes.get(recipe.id), current => {
+          if (!current) throw new Error('配方已删除');
+          recipes.put({ ...current, coverArtworkId: item.id, updatedAt: Date.now() });
+        });
+      });
+    });
     await refreshData();
     inspectRecipe(recipesCache.find(value => value.id === recipe.id));
     toast('已设为配方封面');
@@ -1558,14 +1590,8 @@ function openImageDialog(item) {
 }
 
 async function moveArtworkRecords(items, targetRecipeId) {
-  const target = recipesCache.find(recipe => recipe.id === targetRecipeId);
-  if (targetRecipeId && !target) throw new Error('目标配方已不存在');
-  const ids = new Set(items.filter(item => item.recipeId !== targetRecipeId).map(item => item.id));
-  const updates = recipesCache.filter(recipe => ids.has(recipe.coverArtworkId)).map(recipe => ({ ...recipe, coverArtworkId: null, updatedAt: Date.now() }));
-  if (target && !target.coverArtworkId && items.length) updates.push({ ...target, coverArtworkId: items[0].id, updatedAt: Date.now() });
-  await commitRecords({ artworks: items.map(item => ({ ...item, recipeId: targetRecipeId, category: target?.name || '未分类', updatedAt: Date.now() })), recipes: updates });
+  return changeGalleryArtworks(items.map(item => item.id), null, { targetRecipeId });
 }
-async function moveArtworkRecord(item, targetRecipeId) { return moveArtworkRecords([item], targetRecipeId); }
 
 $('confirmMoveBtn').onclick = async () => {
   try {
@@ -1573,21 +1599,21 @@ $('confirmMoveBtn').onclick = async () => {
   if (batchMoveActive) {
     const items = selectedArtworks();
     if (!items.length) { toast('请先选择图片'); return; }
-    await moveArtworkRecords(items, targetRecipeId);
+    const moved = await moveArtworkRecords(items, targetRecipeId);
     closeDialog('moveDialog');
     batchMoveActive = false;
     artworkSelectionMode = false;
     selectedArtworkIds.clear();
     await refreshData();
-    toast(`已移动 ${items.length} 张图片`);
+    toast(`已移动 ${moved.length} 张图片`);
     return;
   }
   if (!currentImage) return;
-  await moveArtworkRecord(currentImage, targetRecipeId);
+  const [moved] = await moveArtworkRecords([currentImage], targetRecipeId);
   closeDialog('moveDialog');
   closeDialog('imageDialog');
   await refreshData();
-  toast('图片已重新归档');
+  toast(moved ? '图片已重新归档' : '图片已删除');
   } catch (error) { toast(`操作失败：${error.message}`); }
 };
 
@@ -1599,16 +1625,16 @@ $('confirmBatchTags').onclick = async () => {
   const items = selectedArtworks();
   if (!tags.length) { toast('请先填写标签'); return; }
   if (!items.length) { toast('请先选择图片'); return; }
-  await commitRecords({ artworks: items.map(item => ({ ...item, tags: [...new Set([...(item.tags || []), ...tags])], updatedAt: Date.now() })) });
+  const updated = await changeGalleryArtworks(items.map(item => item.id), item => ({ tags: [...new Set([...(item.tags || []), ...tags])] }));
   closeDialog('batchTagDialog');
   await refreshData();
-  toast(`已给 ${items.length} 张图片添加标签`);
+  toast(`已给 ${updated.length} 张图片添加标签`);
   } catch (error) { toast(`操作失败：${error.message}`); }
 };
 
 async function deleteArtwork(item) {
   if (!confirm('删除这张图片及其生成记录？此操作不可恢复。')) return;
-  await commitRecords({ recipes: recipesCache.filter(recipe => recipe.coverArtworkId === item.id).map(owner => ({ ...owner, coverArtworkId: null, updatedAt: Date.now() })) }, { artworks: [item.id] });
+  await changeGalleryArtworks([item.id], null, { remove: true });
   closeDialog('imageDialog');
   await refreshData();
   toast('图片记录已删除');
@@ -1695,11 +1721,33 @@ async function batchDownloadArtworkJpegs() {
 function reuseArtwork(item) {
   characterNegativeSuffix = '';
   resetSeedForSource(item, false);
-  $('clothingPrompt').value = item.clothingPrompt || '';
   trackedWordSources = structuredClone(Array.isArray(item.wordSources) ? item.wordSources : inferredWordSources(item));
   restoreVibeSelection(item.vibes || [], item.model);
-  ['scenePrompt', 'clothingPrompt', 'characterPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt', 'model', 'size', 'steps', 'scale', 'sampler', 'noiseSchedule'].forEach(key => {
-    if (item[key] !== undefined && $(key)) $(key).value = item[key];
+  const raw = item.sourcePrompt || '';
+  const captions = item.characterCaptions || imageCharacterCaptions(item.rawMetadata?.parsed);
+  for (const key of ['scenePrompt', 'clothingPrompt', 'characterPrompt', 'artistPrompt', 'positivePrompt', 'negativePrompt']) {
+    $(key).value = item[key] || '';
+  }
+  if (item.imported && raw && item.scenePrompt === raw) $('scenePrompt').value = '';
+  if (captions.positive.length) $('characterPrompt').value = captions.positive.map(caption => caption.char_caption).filter(Boolean).join(', ');
+  if (item.imported && raw && item.artistPrompt === undefined && item.positivePrompt === undefined) $('positivePrompt').value = raw;
+  const split = extractArtistPrompt(raw);
+  const originalSplit = raw && $('artistPrompt').value === split.artist && $('positivePrompt').value === split.remaining;
+  const separate = captions.positive.length > 0;
+  reusedImagePrompt = {
+    raw: (originalSplit ? raw : item.baseCaption) || '',
+    parts: JSON.stringify(orderedPromptParts(separate)),
+    characterText: $('characterPrompt').value, captions
+  };
+  const params = item.imported && item.rawMetadata?.parsed
+    ? { model: item.model, size: item.size, ...reportedImageValues({ text: { metadata: item.rawMetadata.parsed } }) } : item;
+  ['model', 'size', 'steps', 'scale', 'sampler', 'noiseSchedule'].forEach(key => {
+    const value = params[key], field = $(key);
+    if (value === undefined || value === null || value === '') return;
+    if (field.options && !Array.from(field.options).some(option => option.value === String(value))) return;
+    const previous = field.value;
+    field.value = value;
+    if (!field.value || !field.checkValidity()) field.value = previous;
   });
   if (typeof item.baseNegativePrompt === 'string') $('negativePrompt').value = item.baseNegativePrompt;
   $('tags').value = (item.tags || []).join(', ');
@@ -2057,7 +2105,10 @@ fields.forEach(id => {
   element.addEventListener('input', saveSettings);
   element.addEventListener('change', saveSettings);
 });
-$('token').addEventListener('input', updateApiStatus);
+$('token').addEventListener('input', () => {
+  if ($('rememberToken').checked) localStorage.setItem(TOKEN_KEY, $('token').value);
+  updateApiStatus();
+});
 $('copyAllBtn').onclick = () => copyText(fullPrompt());
 $('downloadLatest').onclick = () => toast('开始下载最新图片');
 $('downloadLatestJpeg').onclick = () => downloadArtworkJpeg(latestArtwork, $('downloadLatestJpeg'));
@@ -2076,6 +2127,7 @@ $('characterPrompt').addEventListener('input', () => {
 });
 
 $('testPresetBtn').onclick = () => {
+  reusedImagePrompt = null;
   $('model').value = 'nai-diffusion-5-full';
   $('size').value = '512x768';
   $('steps').value = '28';

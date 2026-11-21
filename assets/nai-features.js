@@ -40,9 +40,14 @@ async function moveToCollection(type, recordId, folderId) {
     record.updatedAt = Date.now();
     (type === 'words' ? saveWords : saveCharacters)(list);
   } else {
-    const record = await dbGet(type, type === 'artworks' ? Number(recordId) : String(recordId));
-    if (!record) throw new Error('这条资料已不存在');
-    await dbPut(type, { ...record, folderId, updatedAt: Date.now() });
+    if (type === 'artworks') {
+      const updated = await changeGalleryArtworks([Number(recordId)], () => ({ folderId }));
+      if (!updated.length) throw new Error('这张图片已不存在');
+    } else {
+      const record = await dbGet('recipes', String(recordId));
+      if (!record) throw new Error('这份配方已不存在');
+      await dbPut('recipes', { ...record, folderId, updatedAt: Date.now() });
+    }
     await refreshData();
   }
 }

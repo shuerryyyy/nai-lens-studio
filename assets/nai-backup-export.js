@@ -80,7 +80,13 @@ async function exportBackupRecord(type, record, state) {
   if (!stored || !(stored.blob instanceof Blob)) throw new Error('图片已不存在或无法读取，请重新开始备份');
   if (stored.updatedAt !== record.updatedAt) throw new Error('备份期间图片被修改，请重新开始备份');
   const artwork = { ...withTransferId(stored, 'artwork', state.sourceDeviceId), contentHash: stored.contentHash || await blobFingerprint(stored.blob) };
-  if (!stored.transferId || !stored.contentHash) await dbPut('artworks', artwork);
+  if (!stored.transferId || !stored.contentHash) {
+    const updated = await changeGalleryArtworks([record.id], current => {
+      if (current.updatedAt !== record.updatedAt) throw new Error('备份期间图片被修改，请重新开始备份');
+      return { transferId: artwork.transferId, contentHash: artwork.contentHash };
+    }, { touch: false });
+    if (!updated.length) throw new Error('备份期间图片被删除，请重新开始备份');
+  }
   const { blob, ...exported } = artwork;
   if (Array.isArray(exported.wordSources)) exported.wordSources = exported.wordSources.filter(Boolean).map(source => {
     const word = state.wordIndex.get(String(source.wordId));

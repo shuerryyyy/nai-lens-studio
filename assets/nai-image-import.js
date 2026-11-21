@@ -4,6 +4,8 @@
 async function beginImageImport(file, targetRecipeId = '', targetWordId = '') {
   pendingImport = { file, targetRecipeId, targetWordId, metadata: null };
   const importing = pendingImport;
+  const submit = $('imageImportForm').querySelector('[type="submit"]');
+  submit.disabled = true;
   if (importPreviewUrl) URL.revokeObjectURL(importPreviewUrl);
   importPreviewUrl = URL.createObjectURL(file);
   $('importPreview').src = importPreviewUrl;
@@ -13,6 +15,7 @@ async function beginImageImport(file, targetRecipeId = '', targetWordId = '') {
   $('importNegative').value = '';
   $('importRawPrompt').value = '';
   $('importRawMeta').textContent = '';
+  $('importRecipeName').value = file.name.replace(/\.(png|webp|jpe?g)$/i, '');
   $('importRecipeMode').value = targetRecipeId ? 'existing' : targetWordId ? 'none' : 'new';
   $('importRecipeSelect').value = targetRecipeId || recipesCache[0]?.id || '';
   updateImportMode();
@@ -22,6 +25,7 @@ async function beginImageImport(file, targetRecipeId = '', targetWordId = '') {
     if (pendingImport !== importing) return;
     const metadata = extractNovelAIMetadata(png);
     pendingImport.metadata = metadata;
+    importing.validImage = true;
     $('importArtist').value = metadata.artistPrompt;
     $('importPositive').value = metadata.positivePrompt;
     $('importNegative').value = metadata.negativePrompt;
@@ -32,10 +36,16 @@ async function beginImageImport(file, targetRecipeId = '', targetWordId = '') {
     $('importStatus').textContent = metadata.rawPrompt || metadata.negativePrompt
       ? '已读取图片内嵌信息；自动拆分后请确认三项内容。'
       : '图片中没有可识别的 NovelAI 提示词，可能经过截图或平台转码；仍可手动填写并归档。';
+    if (metadata.splitWarning) $('importStatus').textContent += ` ${metadata.splitWarning}`;
     if (png.text.ReadWarning) $('importStatus').textContent += ` ${png.text.ReadWarning}。`;
   } catch (error) {
+    try { await validateGeneratedImage(file); importing.validImage = true; } catch {}
     if (pendingImport !== importing) return;
-    $('importStatus').textContent = `解析失败：${error.message}。仍可手动填写配方后保存图片。`;
+    $('importStatus').textContent = importing.validImage
+      ? `解析失败：${error.message}。仍可手动填写配方后保存图片。`
+      : '无法解码图片，请选择有效的 PNG、JPEG 或 WebP 文件。';
+  } finally {
+    if (pendingImport === importing) submit.disabled = !importing.validImage;
   }
 }
 
@@ -60,7 +70,7 @@ document.querySelectorAll('[data-import-copy]').forEach(button => {
 
 $('imageImportForm').onsubmit = async event => {
   event.preventDefault();
-  if (!pendingImport?.file) return;
+  if (!pendingImport?.validImage) return;
   const submit = $('imageImportForm').querySelector('[type="submit"]');
   if (submit.disabled) return;
   submit.disabled = true;
@@ -87,12 +97,14 @@ $('imageImportForm').onsubmit = async event => {
     if (!recipe) { toast('请先选择一份已有配方'); return; }
   }
   const metadata = importing.metadata || {};
+  const captions = imageCharacterCaptions(metadata.raw?.parsed);
   const artwork = {
     title: importing.file.name.replace(/\.(png|webp|jpe?g)$/i, ''),
-    scenePrompt: metadata.rawPrompt || '', sourcePrompt: metadata.rawPrompt || '',
+    scenePrompt: '', sourcePrompt: metadata.rawPrompt || '',
+    characterPrompt: captions.positive.map(item => item.char_caption).filter(Boolean).join(', '),
     artistPrompt: $('importArtist').value.trim(), positivePrompt: $('importPositive').value.trim(),
     negativePrompt: $('importNegative').value.trim(), fullPrompt: metadata.rawPrompt || '',
-    model: metadata.model || 'unknown', size: metadata.size || '', steps: metadata.steps || '',
+    model: metadata.model || '', size: metadata.size || '', steps: metadata.steps ?? '',
     scale: metadata.scale ?? '', seed: metadata.seed || '', sampler: metadata.sampler || '',
     noiseSchedule: metadata.noiseSchedule || '', recipeId,
     varietyPlus: metadata.varietyPlus,
@@ -101,31 +113,17 @@ $('imageImportForm').onsubmit = async event => {
     ...(importing.targetWordId ? { exampleWordIds: [importing.targetWordId] } : {})
   };
   await withArtworkStorage(async () => {
-  const storedArtwork = await artworkForStorage(artwork);
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(['artworks', 'recipes'], 'readwrite');
-    let failure;
-    tx.oncomplete = resolve; tx.onabort = () => reject(failure || tx.error || new Error('导入失败，本次图片与配方写入已撤销')); tx.onerror = () => {};
-    try {
-      const request = tx.objectStore('artworks').add(storedArtwork);
-      request.onsuccess = () => {
-        try {
-          if (!recipe) return;
-          const store = tx.objectStore('recipes');
-          if (mode === 'new') store.add({ ...recipe, coverArtworkId: request.result });
-          else {
-            const existing = store.get(recipeId);
-            existing.onsuccess = () => {
-              try {
-                if (!existing.result) throw new Error('配方已被删除，请重新选择');
-                if (!existing.result.coverArtworkId) store.put({ ...existing.result, coverArtworkId: request.result, updatedAt: Date.now() });
-              } catch (error) { failure = error; tx.abort(); }
-            };
-          }
-        } catch (error) { failure = error; tx.abort(); }
-      };
-    } catch (error) { failure = error; tx.abort(); }
-  });
+    const storedArtwork = await artworkForStorage(artwork);
+    await writeGallery((artworks, recipes, onResult) => {
+      onResult(artworks.add(storedArtwork), id => {
+        if (!recipe) return;
+        if (mode === 'new') { recipes.add({ ...recipe, coverArtworkId: id }); return; }
+        onResult(recipes.get(recipeId), existing => {
+          if (!existing) throw new Error('配方已被删除，请重新选择');
+          if (!existing.coverArtworkId) recipes.put({ ...existing, coverArtworkId: id, updatedAt: Date.now() });
+        });
+      });
+    });
   });
   saved = true;
   if (pendingImport === importing) { closeDialog('imageImportDialog'); pendingImport = null; }

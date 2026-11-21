@@ -84,9 +84,16 @@ async function restoreVibeSelection(items, model = '') {
   const revision = ++vibeSelectionRevision;
   try {
   for(const item of Array.isArray(items)?items.slice(0,16):[]) {
-    if(!vibeCache.some(asset=>asset.id===item.id)&&item.encoding) {
-      const asset=normalizeVibeAsset({id:item.id,name:item.name||'图片中复用的 Vibe',encodings:[{model:item.model||model,information:item.information,encoding:item.encoding}]});
-      await dbPut('vibes',asset);vibeCache.push(asset);
+    const existing = vibeCache.find(asset => asset.id === item.id);
+    const entryModel = item.model || model;
+    const fromV3 = entryModel === 'nai-diffusion-3';
+    if (item.encoding && (!existing || fromV3 && !existing.image)) {
+      const asset = normalizeVibeAsset({
+        ...(existing || { id: item.id, name: item.name || '图片中复用的 Vibe' }),
+        ...(fromV3 ? { image: item.encoding } : { encodings: [{ model: entryModel, information: item.information, encoding: item.encoding }] })
+      });
+      await dbPut('vibes', asset);
+      if (existing) Object.assign(existing, asset); else vibeCache.push(asset);
     }
   }
   if (revision !== vibeSelectionRevision) return;

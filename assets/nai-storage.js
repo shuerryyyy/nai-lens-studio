@@ -109,6 +109,116 @@ const dbClear = store => storeRequest(store, 'readwrite', objectStore => objectS
 const dbGet = (store, id) => storeRequest(store, 'readonly', objectStore => objectStore.get(id)).then(record => store === 'artworks' ? artworkFromStorage(record) : record);
 const dbAll = store => storeRequest(store, 'readonly', objectStore => objectStore.getAll()).then(records => store === 'artworks' ? records.map(artworkFromStorage) : records);
 
+function writeGallery(operation) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['artworks', 'recipes'], 'readwrite');
+    let result, failure;
+    const run = callback => {
+      try { callback(); } catch (error) { failure = error; tx.abort(); }
+    };
+    const onResult = (request, callback) => {
+      request.onsuccess = () => run(() => callback(request.result));
+    };
+    tx.oncomplete = () => resolve(result);
+    tx.onabort = () => reject(failure || tx.error || new Error('图库写入失败，本次修改已撤销'));
+    run(() => operation(tx.objectStore('artworks'), tx.objectStore('recipes'), onResult, value => { result = value; }));
+  });
+}
+
+async function archiveGeneratedArtwork(artwork) {
+  return withArtworkStorage(async () => {
+    const stored = await artworkForStorage(artwork);
+    return writeGallery((artworks, recipes, onResult, finish) => {
+      const save = recipe => {
+        const association = { recipeId: recipe?.id || '', category: recipe?.name || '未分类' };
+        onResult(artworks.add({ ...stored, ...association }), id => {
+          if (recipe) {
+            const now = Date.now();
+            recipes.put({ ...recipe, coverArtworkId: recipe.coverArtworkId || id, lastUsedAt: now, updatedAt: now });
+          }
+          finish({ id, ...association });
+        });
+      };
+      if (artwork.recipeId) onResult(recipes.get(artwork.recipeId), save);
+      else save(null);
+    });
+  });
+}
+
+async function legacyArtworkBytes(ids) {
+  // Existing image bytes are immutable. Read legacy Blobs before opening the write transaction.
+  const fallbackBlobs = new Map();
+  for (const id of ids) {
+    const record = await storeRequest('artworks', 'readonly', store => store.get(id));
+    if (record?.blob instanceof Blob) fallbackBlobs.set(id, (await artworkForStorage(record)).blob);
+  }
+  return fallbackBlobs;
+}
+
+function changeGalleryArtworks(ids, change, { remove = false, targetRecipeId, touch = true } = {}) {
+  return withArtworkStorage(async () => {
+    const fallbackBlobs = storeArtworkAsBytes && !remove ? await legacyArtworkBytes(ids) : null;
+    return writeGallery((artworks, recipes, onResult, finish) => {
+      const now = Date.now(), updated = [], clearCovers = new Set();
+      const moving = targetRecipeId !== undefined;
+      const apply = owners => {
+        const target = moving && targetRecipeId ? owners.find(recipe => recipe.id === targetRecipeId) : null;
+        if (moving && targetRecipeId && !target) throw new Error('目标配方已不存在');
+        let remaining = ids.length;
+        const complete = () => {
+          for (const recipe of owners) {
+            let cover = clearCovers.has(recipe.coverArtworkId) ? null : recipe.coverArtworkId;
+            if (recipe === target && !cover && updated.length) cover = updated[0].id;
+            if (cover !== recipe.coverArtworkId) recipes.put({ ...recipe, coverArtworkId: cover, updatedAt: now });
+          }
+          finish(updated);
+        };
+        if (!remaining) complete();
+        for (const id of ids) onResult(artworks.get(id), record => {
+          if (record) {
+            if (remove) {
+              artworks.delete(id);
+              clearCovers.add(id);
+              updated.push(record);
+            } else {
+              const patch = moving ? { recipeId: targetRecipeId, category: target?.name || '未分类' } : change(record);
+              if (moving && record.recipeId !== targetRecipeId) clearCovers.add(id);
+              const next = { ...record, ...patch };
+              if (next.blob instanceof Blob && fallbackBlobs?.has(id)) next.blob = fallbackBlobs.get(id);
+              if (touch) next.updatedAt = now;
+              artworks.put(next);
+              updated.push(next);
+            }
+          }
+          if (!--remaining) complete();
+        });
+      };
+      if (remove || moving) onResult(recipes.getAll(), apply);
+      else apply([]);
+    });
+  }).then(records => records.map(artworkFromStorage));
+}
+
+function deleteGalleryRecipe(recipeId) {
+  return withArtworkStorage(async () => {
+    const fallbackBlobs = storeArtworkAsBytes
+      ? await legacyArtworkBytes((await backupArtworkMetadata()).filter(item => item.recipeId === recipeId).map(item => item.id))
+      : null;
+    return writeGallery((artworks, recipes, onResult) => {
+      recipes.delete(recipeId);
+      onResult(artworks.openCursor(), cursor => {
+        if (!cursor) return;
+        const artwork = cursor.value;
+        if (artwork.recipeId === recipeId) {
+          const blob = artwork.blob instanceof Blob ? fallbackBlobs?.get(artwork.id) || artwork.blob : artwork.blob;
+          cursor.update({ ...artwork, blob, recipeId: '', category: '未分类', updatedAt: Date.now() });
+        }
+        cursor.continue();
+      });
+    });
+  });
+}
+
 function backupArtworkMetadata() {
   return new Promise((resolve, reject) => {
     const records = [], tx = db.transaction('artworks', 'readonly');

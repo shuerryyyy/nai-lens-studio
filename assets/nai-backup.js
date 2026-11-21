@@ -277,7 +277,7 @@ async function analyzeBackupImport(data) {
   for (const artwork of data.artworks) if(Array.isArray(artwork.vibes)) artwork.vibes = artwork.vibes.map(item => ({...item,id:vibeRecords.idMap.get(String(item.id))||item.id}));
   for (const recipe of data.recipes) if(Array.isArray(recipe.defaultParams?.vibes)) recipe.defaultParams.vibes = recipe.defaultParams.vibes.map(item => ({...item,id:vibeRecords.idMap.get(String(item.id))||item.id}));
   const existingRecipes = await dbAll('recipes');
-  const existingArtworks = await backupArtworkMetadata();
+  const existingArtworks = data.artworks.length ? await backupArtworkMetadata() : [];
   const existingWords = words();
   const existingCharacters = characters();
   const characterPlan = prepareRecordPlan(data.characters, existingCharacters, characterContentKey, 'character');
@@ -344,14 +344,14 @@ async function analyzeBackupImport(data) {
   return plans;
 }
 
-async function restoreBackupData(data, suppliedPlan = null) {
+async function restoreBackupData(data) {
   if (restoreInProgress) throw new Error('另一个备份正在恢复，请稍后再试');
   restoreInProgress = true;
   const previousCharacters = localStorage.getItem(CHARACTERS_KEY);
   const previousWords = localStorage.getItem(WORDS_KEY);
   let localWritten = false;
   try {
-  const plan = suppliedPlan || await analyzeBackupImport(data);
+  const plan = await analyzeBackupImport(data);
   const existingCharacters = characters();
   const existingWords = words();
   const replaceMerged = (existing, merges) => {
@@ -425,7 +425,7 @@ async function restoreBackupData(data, suppliedPlan = null) {
 }
 
 function showRestorePreview(data, plan) {
-  pendingBackupImport = { data: plan.data || data, plan };
+  pendingBackupImport = data;
   $('restorePreviewStats').innerHTML = [
     ['新增', plan.stats.added], ['更新/补全', plan.stats.merged], ['跳过重复', plan.stats.skipped]
   ].map(([label, count]) => `<div class="restore-stat"><b>${count}</b><span>${label}</span></div>`).join('');
@@ -437,6 +437,9 @@ function showRestorePreview(data, plan) {
 }
 
 $('cancelRestorePreview').onclick = () => { pendingBackupImport = null; closeDialog('restorePreviewDialog'); };
+$('restorePreviewDialog').addEventListener('close', () => {
+  if (!$('restorePreviewDialog').open) pendingBackupImport = null;
+});
 $('confirmRestorePreview').onclick = async () => {
   if (!pendingBackupImport) return;
   const button = $('confirmRestorePreview');
@@ -444,7 +447,7 @@ $('confirmRestorePreview').onclick = async () => {
   try {
     // Recompute against current data: another tab may have edited records while
     // the preview was open. Never apply a stale overwrite plan.
-    const restored = await restoreBackupData(pendingBackupImport.data);
+    const restored = await restoreBackupData(pendingBackupImport);
     closeDialog('restorePreviewDialog');
     toast(`已合并 ${restored.artworkCount} 张图片、${restored.recipeCount} 份配方；更新/补全 ${restored.mergedCount} 项，跳过 ${restored.skippedCount} 项重复`);
     pendingBackupImport = null;

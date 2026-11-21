@@ -95,8 +95,34 @@ function splitPrompt(prompt) {
 
 function extractArtistPrompt(prompt) {
   const parts = splitPrompt(prompt);
-  const artists = parts.filter(part => /(?:^|[\s{[(])artist\s*:|^by\s+|artist[_-]?name/i.test(part));
-  return { artist: artists.join(', '), remaining: parts.filter(part => !artists.includes(part)).join(', ') };
+  const isArtist = part => /(?:^|[\s{[(])artist\s*:|^by\s+|artist[_-]?name/i.test(part);
+  const opening = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+))(\s*)::\s*/;
+  const keepRaw = reason => {
+    const onlyArtists = parts.every(part => /^artist\s*:[^|]+$/i.test(part.replace(opening, '')));
+    return {
+      artist: onlyArtists ? prompt : '', remaining: onlyArtists ? '' : prompt,
+      warning: reason + (onlyArtists ? '已保留画师串原文，请检查权重。' : '已将完整原词保留在正面词栏，请手动拆分。')
+    };
+  };
+  if (prompt.includes('::') && prompt.includes('|')) return keepRaw('检测到包含权重的分段提示词。');
+  const artists = [], remaining = [];
+  let weight = '';
+  for (const part of parts) {
+    const start = part.match(opening);
+    if (start?.[2]) return keepRaw('检测到权重数字和 :: 之间有空格。');
+    if (start) weight = start[1];
+    const text = start ? part.slice(start[0].length) : part;
+    const closes = text.endsWith('::');
+    const tag = closes ? text.slice(0, -2).trimEnd() : text;
+    // shortcut: emphasis inside a single tag stays intact for manual splitting.
+    if (tag.includes('::')) return keepRaw('检测到词组内部的权重。');
+    if (tag) {
+      const target = isArtist(tag) ? artists : remaining;
+      target.push(weight ? `${weight}::${tag} ::` : tag);
+    }
+    if (closes) weight = '';
+  }
+  return { artist: artists.join(', '), remaining: remaining.join(', ') };
 }
 
 function normalizeModel(value = '') {
@@ -129,14 +155,29 @@ function extractNovelAIMetadata(png) {
   const model = normalizeModel(json.model || json.source || json.Source || json.Software || png.text.Source || png.text.Software || '');
   const width = Number(json.width) || png.width;
   const height = Number(json.height) || png.height;
-  const scale = Number(json.scale ?? json.cfg_scale ?? 7);
+  const numeric = value => value !== undefined && value !== null && value !== '' && Number.isFinite(Number(value)) ? Number(value) : undefined;
   return {
-    rawPrompt: prompt, artistPrompt: split.artist, positivePrompt: split.remaining,
+    rawPrompt: prompt, artistPrompt: split.artist, positivePrompt: split.remaining, splitWarning: split.warning,
     negativePrompt: negative, model, size: width && height ? `${width}x${height}` : '',
-    steps: Number(json.steps) || 28, scale: Number.isFinite(scale) ? scale : 7,
-    seed: json.seed !== undefined ? String(json.seed) : '', sampler: json.sampler || 'k_euler_ancestral',
+    steps: numeric(json.steps), scale: numeric(json.scale ?? json.cfg_scale),
+    seed: json.seed != null ? String(json.seed) : '', sampler: typeof json.sampler === 'string' ? json.sampler : '',
     varietyPlus: readVarietyPlus(json),
-    noiseSchedule: json.noise_schedule || json.noiseSchedule || 'karras', raw: { ...png.text, parsed: json }
+    noiseSchedule: json.noise_schedule || json.noiseSchedule || '', raw: { ...png.text, parsed: json }
+  };
+}
+
+function imageCharacterCaptions(raw) {
+  const positive = raw?.v4_prompt, negative = raw?.v4_negative_prompt;
+  const read = value => Array.isArray(value?.caption?.char_captions)
+    ? value.caption.char_captions.filter(item => typeof item?.char_caption === 'string').map(item => ({
+      char_caption: item.char_caption,
+      centers: Array.isArray(item.centers) ? item.centers.filter(point =>
+        Number.isFinite(point?.x) && Number.isFinite(point?.y) &&
+        point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1) : []
+    })) : [];
+  return {
+    positive: read(positive), negative: read(negative),
+    useCoords: positive?.use_coords === true, useOrder: positive?.use_order !== false
   };
 }
 

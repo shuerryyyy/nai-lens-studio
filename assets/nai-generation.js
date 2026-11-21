@@ -21,6 +21,8 @@ function collectMeta() {
   const linkedCharacters = selectedPromptCharacters();
   const baseNegativePrompt = syncCharacterNegativePrompt().trim();
   const negativePrompt = $('negativePrompt').value.trim();
+  const restored = reusedImagePrompt?.characterText === currentCharacterPrompt ? reusedImagePrompt.captions : null;
+  const characterCaptions = !($('model').value === 'nai-diffusion-3') && restored?.positive?.length ? restored : null;
   return {
     wordSources: collectedWordSources(Object.fromEntries(WORD_PROMPT_FIELDS.map(field => [field, $(field).value]))),
     title: $('scenePrompt').value.trim().slice(0, 42) || recipe?.name || '未命名镜头',
@@ -29,10 +31,11 @@ function collectMeta() {
     characterId: linkedCharacters[0]?.id || '', characterName: linkedCharacters[0]?.name || '', artistPrompt: $('artistPrompt').value.trim(),
     positivePrompt: $('positivePrompt').value.trim(), baseNegativePrompt, negativePrompt: isMedium ? '' : negativePrompt,
     fullPrompt: fullPrompt(), model: $('model').value, size: $('size').value,
+    ...(characterCaptions ? { characterCaptions, baseCaption: fullPrompt(true) } : {}),
     recipeId: recipe?.id || '', category: recipe?.name || '未分类', tags: splitTags($('tags').value),
     steps: isMedium ? 14 : Number($('steps').value) || 28, scale: $('scale').value.trim() === '' ? 7 : Number($('scale').value),
     seed: $('seed').value.trim(), sampler: isMedium ? 'k_euler_ancestral' : $('sampler').value,
-    noiseSchedule: $('noiseSchedule').value, transparentBg: $('transparentBg').checked,
+    noiseSchedule: $('noiseSchedule').value, transparentBg: !$('transparentBg').disabled && $('transparentBg').checked,
     varietyPlus: varietySupported($('model').value) && $('varietyPlus').checked,
     provider: $('apiMode').value,
     vibes: vibeSupported($('model').value) ? structuredClone(vibeSelection.filter(item => item.enabled !== false)) : []
@@ -48,16 +51,20 @@ function naiRequest(meta) {
   const seed = meta.seed !== '' && meta.seed != null ? Number(meta.seed) : randomSeed();
   meta.seed = String(seed);
   const isV5 = meta.model.startsWith('nai-diffusion-5-');
-  const caption = prompt => ({ base_caption: prompt, char_captions: [] });
+  const characters = meta.characterCaptions;
+  const input = characters ? meta.baseCaption : meta.fullPrompt;
+  const caption = (prompt, items = []) => ({ base_caption: prompt, char_captions: items });
+  const negativeCharacters = meta.model === 'nai-diffusion-5-full-medium' ? [] : characters?.negative;
   return {
-    input: meta.fullPrompt, model: meta.model, action: 'generate',
+    input, model: meta.model, action: 'generate',
     parameters: {
       params_version: isV5 ? 4 : 3, width, height, scale: meta.scale, sampler: meta.sampler,
       steps: meta.steps, n_samples: 1, seed, negative_prompt: meta.negativePrompt,
       noise_schedule: meta.noiseSchedule, qualityToggle: true, ucPreset: 0, legacy: false,
       ...(meta.varietyPlus ? { skip_cfg_above_sigma: varietySigma(meta) } : {}),
-      use_coords: false, v4_prompt: { caption: caption(meta.fullPrompt), use_coords: false, use_order: true },
-      v4_negative_prompt: { caption: caption(meta.negativePrompt), use_coords: false, use_order: false },
+      use_coords: characters?.useCoords === true,
+      v4_prompt: { caption: caption(input, characters?.positive), use_coords: characters?.useCoords === true, use_order: characters?.useOrder !== false },
+      v4_negative_prompt: { caption: caption(meta.negativePrompt, negativeCharacters), use_coords: false, use_order: false },
       ...(isV5 ? {
         qualityPresetId: 'standard', ucPresetId: 'heavy', add_original_image: false,
         characterPrompts: [], reference_image_multiple: [], reference_information_extracted_multiple: [],
@@ -251,6 +258,10 @@ function setStatus(text, type = '', detail = '') {
 $('generateBtn').onclick = async () => {
   const token = $('token').value.trim();
   const meta = collectMeta();
+  if (!meta.model || !/^[1-9]\d*x[1-9]\d*$/.test(meta.size)) {
+    setStatus('参数无效', 'err', '请选择可用的模型和画布尺寸。');
+    return;
+  }
   for (const id of ['steps', 'scale']) {
     if (!$(id).checkValidity()) { setStatus('参数无效', 'err', id === 'steps' ? '步数须为1–50的整数。' : 'Guidance须为0–20的数字。'); $(id).reportValidity(); return; }
   }
@@ -281,6 +292,11 @@ $('generateBtn').onclick = async () => {
   try {
     const mode = $('apiMode').value, endpoint = $('endpoint').value.trim();
     const adapter = NaiAdapters.requireFor(endpoint,mode,meta);
+    const nativeRequest = !adapter && (mode === 'official' || /\/ai\/generate-image\/?$/.test(new URL(endpoint).pathname));
+    if (!nativeRequest) {
+      delete meta.characterCaptions;
+      delete meta.baseCaption;
+    }
     let adaptedBody = null;
     if (adapter) {
       if (meta.seed === '' || meta.seed == null) meta.seed = String(randomSeed());
@@ -293,7 +309,7 @@ $('generateBtn').onclick = async () => {
       signal: controller.signal,
       redirect: adapter ? 'error' : 'follow',
       headers: adapter ? NaiAdapters.headers(adapter,token) : { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, image/png, application/zip' },
-      body: JSON.stringify(adapter ? adaptedBody : mode === 'official' || /\/ai\/generate-image\/?$/.test(new URL(endpoint).pathname) ? naiRequest(meta) : proxyRequest(meta,endpoint))
+      body: JSON.stringify(adapter ? adaptedBody : nativeRequest ? naiRequest(meta) : proxyRequest(meta,endpoint))
     });
     if (!response.ok) throw new Error(explainHttpError(response.status, await response.text(), mode));
     const blob = await parseImageResponse(response, mode, adapter);
@@ -303,8 +319,9 @@ $('generateBtn').onclick = async () => {
     meta.seedSource = 'requested';
     if (blob.type === 'image/png') {
       try {
-        const returned = extractNovelAIMetadata(await parsePNG(blob));
-        if (returned.seed !== '') { meta.seed = returned.seed; meta.seedSource = 'image-metadata'; }
+        const returned = await returnedImageValues(blob);
+        const seed = seedReference(returned.seed);
+        if (seed !== '') { meta.seed = seed; meta.seedSource = 'image-metadata'; }
       } catch { /* Metadata is optional; image decoding has already succeeded. */ }
     }
     if (latestUrl) URL.revokeObjectURL(latestUrl);
@@ -317,24 +334,16 @@ $('generateBtn').onclick = async () => {
     $('downloadLatest').download = `NAI_${Date.now()}_${safeFilenamePart(meta.model)}.${blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png'}`;
     $('downloadLatest').hidden = false;
     $('downloadLatestJpeg').hidden = false;
-    const id = await dbAdd('artworks', latestArtwork);
+    const savedArtwork = await archiveGeneratedArtwork(latestArtwork);
+    const id = savedArtwork.id;
     savedArtworkId = id;
-    latestArtwork.id = id;
-    if (meta.recipeId) {
-      const recipe = await dbGet('recipes', meta.recipeId);
-      if (recipe) {
-        if (!recipe.coverArtworkId) recipe.coverArtworkId = id;
-        recipe.lastUsedAt = Date.now();
-        recipe.updatedAt = Date.now();
-        await dbPut('recipes', recipe);
-      }
-    }
-    setStatus('生成成功，已归档', 'ok', `${meta.category} · ${meta.tags.join(' / ') || '无标签'}${meta.seedSource === 'requested' ? ' · Seed 为请求值，图片未提供实际值' : ''}`);
+    Object.assign(latestArtwork, savedArtwork);
+    setStatus('生成成功，已归档', 'ok', `${savedArtwork.category} · ${meta.tags.join(' / ') || '无标签'}${meta.seedSource === 'requested' ? ' · Seed 为请求值，图片未提供实际值' : ''}`);
     await refreshData();
     toast('图片与当次完整参数已保存');
   } catch (error) {
     if (generatedBlob) {
-      setStatus(savedArtworkId ? '图片已保存，配方更新未完成' : '图片已生成，但归档失败', 'err', `请先下载当前图片，不要重复生成。若正在使用无痕浏览，请保存原图后改用普通模式。${error.message}`);
+      setStatus(savedArtworkId ? '图片已保存，列表刷新未完成' : '图片已生成，但归档失败', 'err', `请先下载当前图片，不要重复生成。若正在使用无痕浏览，请保存原图后改用普通模式。${error.message}`);
       if (savedArtworkId) await refreshData().catch(() => {});
       return;
     }
