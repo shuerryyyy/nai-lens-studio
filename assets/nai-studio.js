@@ -234,7 +234,7 @@ document.querySelectorAll('.copy-btn[data-copy]').forEach(button => {
 });
 
 function fullPrompt() {
-  return [$('positivePrompt').value.trim(), $('characterPrompt').value.trim(), $('clothingPrompt').value.trim(), $('scenePrompt').value.trim(), $('artistPrompt').value.trim()]
+  return generationPromptOrder().map(id => $(id).value.trim())
     .filter(Boolean).join(', ');
 }
 

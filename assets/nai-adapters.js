@@ -266,6 +266,9 @@
       + '\n完整示例二（Aurora，顶层参数、字符串Seed）：\n'+JSON.stringify(example('aurora'),null,2)
       + '\n请等待我提供接口文档或完整的去密钥请求/响应示例，再生成文件。';
   }
+  function invalidateCheck() {
+    if ($('adapterCheckResult').textContent) { $('adapterCheckResult').textContent = '参数已变化，请重新进行本地检查。'; $('adapterCheckPreview').hidden = true; }
+  }
   function init(options) {
     onChange = options.onChange; getPresets = options.getPresets;
     populate('');
@@ -274,9 +277,7 @@
     for (const id of ['endpoint','apiMode']) $(id).addEventListener('change',render);
     $('importApiAdapter').onclick = () => $('apiAdapterFile').click();
     $('checkApiAdapter').onclick = checkCurrent;
-    for (const id of [...PROMPT_SOURCES.filter(id => $(id)), 'model','size','steps','scale','seed','sampler','noiseSchedule','transparentBg','varietyPlus']) $(id).addEventListener('input', () => {
-      if ($('adapterCheckResult').textContent) { $('adapterCheckResult').textContent = '参数已变化，请重新进行本地检查。'; $('adapterCheckPreview').hidden = true; }
-    });
+    for (const id of [...PROMPT_SOURCES.filter(id => $(id)), 'model','size','steps','scale','seed','sampler','noiseSchedule','transparentBg','varietyPlus']) $(id).addEventListener('input', invalidateCheck);
     $('apiAdapterFile').onchange = async event => {
       try { const file = event.target.files?.[0]; if (!file) return; if (file.size > LIMIT) fail('适配文件超过64 KB'); let input; try { input = JSON.parse((await file.text()).replace(/^\uFEFF/,'')); } catch { fail('JSON格式无效；请选择JSON文件，去掉Markdown代码围栏并检查逗号和引号'); } const config = importConfig(input); const notice = $('apiAdapterMessage').textContent; $('apiAdapterMessage').textContent = '已导入“'+config.name+'”；请先本地检查，再核对地址并保存API预设。' + (notice ? ' ' + notice : ''); }
       catch (error) { $('apiAdapterMessage').textContent = '导入失败：'+error.message; }
@@ -299,5 +300,5 @@
       catch { $('adapterInstructionsText').value = aiInstructions(); $('adapterInstructionsFallback').hidden = false; $('adapterInstructionsText').focus(); $('adapterInstructionsText').select(); $('apiAdapterMessage').textContent = '自动复制不可用，请复制下方已选中的完整说明。'; }
     };
   }
-  window.NaiAdapters = Object.freeze({validate,list,selectedId,selected,setSelected,render,requireFor,build,headers,imageValue,importConfig,example,schema,aiInstructions,init});
+  window.NaiAdapters = Object.freeze({validate,list,selectedId,selected,setSelected,render,requireFor,build,headers,imageValue,importConfig,example,schema,aiInstructions,init,invalidateCheck});
 })();

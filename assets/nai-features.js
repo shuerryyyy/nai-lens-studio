@@ -87,6 +87,135 @@ function quietTool(name, label) {
   button.innerHTML = icon(name);
   return button;
 }
+
+const generationPromptOrder = (() => {
+  const key = 'nai_studio_prompt_order_v1';
+  const host = $('promptBoxes');
+  const boxes = new Map(Array.from(host.children, box => [box.dataset.promptField, box]));
+  const defaults = [...boxes.keys()];
+  const names = new Map(defaults.map(id => [id, host.querySelector(`label[for="${id}"]`).textContent]));
+  const order = () => Array.from(host.children, box => box.dataset.promptField);
+  const place = ids => ids.forEach(id => host.append(boxes.get(id)));
+  const valid = ids => Array.isArray(ids) && ids.length === boxes.size && new Set(ids).size === boxes.size && ids.every(id => boxes.has(id));
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(key)); } catch { /* Use the default order if storage is unavailable. */ }
+  let layout = valid(saved?.layout) ? saved.layout : defaults;
+  let locked = valid(saved?.locked) ? saved.locked : null;
+  let cancelDrag;
+  const lock = $('lockPromptOrder');
+  const effective = () => locked ?? layout;
+  const showOrder = () => {
+    lock.checked = locked !== null;
+    $('promptGenerationOrder').textContent = `${locked ? '已锁定' : '随词框调整'} · ${effective().map(id => names.get(id)).join(' → ')}`;
+  };
+  const save = (nextLayout, nextLock) => {
+    const previousPrompt = fullPrompt();
+    try { localStorage.setItem(key, JSON.stringify({ layout: nextLayout, locked: nextLock })); }
+    catch {
+      place(layout);
+      showOrder();
+      toast('无法保存提示词顺序，已保留原设置');
+      return false;
+    }
+    layout = nextLayout;
+    locked = nextLock;
+    showOrder();
+    if (previousPrompt !== fullPrompt()) NaiAdapters.invalidateCheck();
+    return true;
+  };
+  place(layout);
+  showOrder();
+  lock.onchange = () => {
+    cancelDrag?.();
+    save(layout, lock.checked ? [...layout] : null);
+  };
+
+  const moved = id => {
+    if (save(order(), locked)) $('promptSortStatus').textContent = `${names.get(id)}已移到第 ${layout.indexOf(id) + 1} 项`;
+  };
+  for (const [id, box] of boxes) {
+    const header = box.querySelector('.field-top');
+    const handle = quietTool('grip-vertical', `排序${names.get(id)}，按住拖动或用上下方向键`);
+    handle.classList.add('prompt-sort-handle');
+    handle.dataset.promptSort = id;
+    header.querySelector('.field-actions').prepend(handle);
+    handle.oncontextmenu = event => event.preventDefault();
+    handle.onkeydown = event => {
+      if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      if (cancelDrag) return;
+      const from = layout.indexOf(id);
+      const to = event.key === 'Home' ? 0 : event.key === 'End' ? layout.length - 1 : from + (event.key === 'ArrowUp' ? -1 : 1);
+      if (to === from || to < 0 || to >= layout.length) return;
+      host.insertBefore(box, to < from ? boxes.get(layout[to]) : boxes.get(layout[to]).nextElementSibling);
+      moved(id);
+      handle.focus({ preventScroll: true });
+      handle.scrollIntoView({ block: 'nearest' });
+    };
+    handle.onpointerdown = event => {
+      if (!event.isPrimary || event.button !== 0 || cancelDrag) return;
+      const { pointerId, clientY: startY } = event;
+      const app = host.closest('.app');
+      const scroller = getComputedStyle(app).overflowY === 'auto' ? app : document.scrollingElement;
+      const listeners = new AbortController();
+      const options = { signal: listeners.signal };
+      let y = startY, dragging = false, frame;
+      // Capturing on the stable parent keeps the gesture alive while the field moves.
+      host.setPointerCapture(pointerId);
+      const reorder = direction => {
+        let target = direction < 0 ? box.previousElementSibling : box.nextElementSibling;
+        while (target) {
+          const rect = target.querySelector('.field-top').getBoundingClientRect();
+          if (direction * (y - rect.top - rect.height / 2) <= 0) break;
+          const next = direction < 0 ? target.previousElementSibling : target.nextElementSibling;
+          host.insertBefore(box, direction < 0 ? target : next);
+          target = next;
+        }
+      };
+      const scroll = () => {
+        const bottom = scroller === app ? app.getBoundingClientRect().bottom : innerHeight;
+        const delta = y < 80 ? -12 : y > bottom - 72 ? 12 : 0;
+        const neighbor = delta < 0 ? box.previousElementSibling : box.nextElementSibling;
+        if (delta && neighbor) {
+          scroller.scrollBy({ top: delta, behavior: 'instant' });
+          reorder(delta);
+        }
+        frame = requestAnimationFrame(scroll);
+      };
+      const finish = commit => {
+        listeners.abort();
+        cancelAnimationFrame(frame);
+        if (host.hasPointerCapture(pointerId)) host.releasePointerCapture(pointerId);
+        cancelDrag = null;
+        box.classList.remove('prompt-dragging');
+        if (!dragging) return;
+        if (!commit) place(layout);
+        else if (order().some((value, index) => value !== layout[index])) moved(id);
+      };
+      cancelDrag = () => finish(false);
+      host.addEventListener('pointermove', move => {
+        if (move.pointerId !== pointerId) return;
+        const previousY = y;
+        y = move.clientY;
+        if (!dragging) {
+          if (Math.abs(y - startY) < 6) return;
+          dragging = true;
+          box.classList.add('prompt-dragging');
+          frame = requestAnimationFrame(scroll);
+          reorder(y - startY);
+        } else if (y !== previousY) reorder(y - previousY);
+      }, options);
+      host.addEventListener('pointerup', up => { if (up.pointerId === pointerId) finish(true); }, options);
+      host.addEventListener('lostpointercapture', lost => { if (lost.pointerId === pointerId) finish(false); }, options);
+      window.addEventListener('blur', cancelDrag, options);
+      window.addEventListener('keydown', keyEvent => {
+        if (keyEvent.key === 'Escape') { keyEvent.preventDefault(); finish(false); }
+      }, options);
+    };
+  }
+  return effective;
+})();
+
 // Store only order changes, using fresh records in one transaction so renames and
 // other libraries cannot be overwritten by a stale drag snapshot.
 async function saveCollectionOrder(type, ids) {

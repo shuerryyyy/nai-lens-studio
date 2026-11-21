@@ -163,6 +163,9 @@ html[data-theme] .recipe-context {background:transparent;border:0;border-bottom:
 .word-inspector .word-content>b {display:none}
 .word-inspector .word-content p,.word-inspector .word-summary span {display:block;white-space:pre-wrap;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;max-height:none;-webkit-line-clamp:unset}
 .word-format-setting {margin-top:24px}
+.prompt-order-setting .check {align-items:center;min-height:44px;margin:0;cursor:pointer}
+.prompt-order-setting small {display:block;color:var(--muted)}
+.prompt-order-setting small + small {margin-top:6px;color:var(--ink)}
 @media(max-width:760px), (max-width:1100px) and (pointer:coarse) {
   .word-gallery-card>.word-actions {opacity:1}
 }
@@ -311,6 +314,11 @@ html[data-theme] .image-tag-editor {background:var(--input);border:0;border-radi
 .folder-sort-handle {touch-action:none;cursor:grab;flex-shrink:0;min-width:44px;min-height:44px;user-select:none;-webkit-user-select:none}
 .folder-sort-handle:active,.folder-dragging .folder-sort-handle {cursor:grabbing}
 .folder-dragging>.folder-heading {background:var(--lift);outline:1px solid var(--signal);outline-offset:2px}
+#promptBoxes {overflow-anchor:none}
+.prompt-sort-handle {touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.prompt-sort-handle:active,.prompt-dragging .prompt-sort-handle {cursor:grabbing}
+.prompt-dragging {outline:1px solid var(--signal);outline-offset:3px}
+.prompt-dragging>.field-top {background:var(--lift)}
 .folder-toggle {display:flex;align-items:center;gap:8px;flex:1;min-width:0;min-height:44px;padding:0 4px 0 0;background:transparent;border:0;color:var(--ink);text-align:left;font-size:14px;font-weight:500}
 .folder-toggle>span {overflow-wrap:anywhere}
 .folder-toggle small {font-size:12px;font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}
