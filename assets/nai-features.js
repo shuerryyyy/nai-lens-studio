@@ -93,7 +93,7 @@ function quietTool(name, label) {
   return button;
 }
 
-const generationPromptOrder = (() => {
+const promptOrder = (() => {
   const key = 'nai_studio_prompt_order_v1';
   const host = $('promptBoxes');
   const boxes = new Map(Array.from(host.children, box => [box.dataset.promptField, box]));
@@ -109,9 +109,10 @@ const generationPromptOrder = (() => {
   let cancelDrag;
   const lock = $('lockPromptOrder');
   const effective = () => locked ?? layout;
+  const describe = ids => ids.map(id => names.get(id)).join(' → ');
   const showOrder = () => {
     lock.checked = locked !== null;
-    $('promptGenerationOrder').textContent = `${locked ? '已锁定' : '随词框调整'} · ${effective().map(id => names.get(id)).join(' → ')}`;
+    $('promptGenerationOrder').textContent = `${locked ? '已锁定' : '随词框调整'} · ${describe(effective())}`;
   };
   const save = (nextLayout, nextLock) => {
     const previousPrompt = fullPrompt();
@@ -133,6 +134,36 @@ const generationPromptOrder = (() => {
   lock.onchange = () => {
     cancelDrag?.();
     save(layout, lock.checked ? [...layout] : null);
+  };
+
+  const forArtwork = item => {
+    if (valid(item.promptOrder)) return item.promptOrder;
+    if (item.imported || typeof item.fullPrompt !== 'string' || !item.fullPrompt) return null;
+    const fields = defaults.map(id => [id, typeof item[id] === 'string' ? item[id].trim() : '']).filter(([, text]) => text);
+    const matches = [];
+    // Old archives only identify the order of fields that contributed to the prompt.
+    const match = (text, remaining, ids) => {
+      if (matches.length > 1) return;
+      if (!remaining.length) {
+        if (!text) matches.push(ids);
+        return;
+      }
+      for (const [id, value] of remaining) {
+        const prefix = remaining.length > 1 ? value + ', ' : value;
+        if (text.startsWith(prefix)) match(text.slice(prefix.length), remaining.filter(([other]) => other !== id), [...ids, id]);
+      }
+    };
+    match(item.fullPrompt, fields, []);
+    return matches.length === 1 ? matches[0] : null;
+  };
+  const restore = ids => {
+    if (!ids) return true;
+    cancelDrag?.();
+    const remaining = [...ids];
+    const next = effective().map(id => ids.includes(id) ? remaining.shift() : id);
+    const restored = save(locked ? layout : next, locked ? next : null);
+    if (restored && !locked) place(layout);
+    return restored;
   };
 
   const moved = id => {
@@ -218,7 +249,7 @@ const generationPromptOrder = (() => {
       }, options);
     };
   }
-  return effective;
+  return { current: effective, describe, valid, forArtwork, restore };
 })();
 
 // Store only order changes, using fresh records in one transaction so renames and

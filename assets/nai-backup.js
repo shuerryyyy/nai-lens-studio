@@ -164,6 +164,10 @@ function mergeRecord(existing, incoming, type = '') {
   if (type === 'artwork') {
     if (Array.isArray(existing.exampleWordIds) || Array.isArray(incoming.exampleWordIds)) merged.exampleWordIds = [...new Set([...(Array.isArray(existing.exampleWordIds) ? existing.exampleWordIds : []), ...(Array.isArray(incoming.exampleWordIds) ? incoming.exampleWordIds : [])])];
     if (!Array.isArray(existing.wordSources) && Array.isArray(incoming.wordSources)) merged.wordSources = incoming.wordSources;
+    if (!promptOrder.valid(existing.promptOrder) && promptOrder.valid(incoming.promptOrder) && existing.fullPrompt === incoming.fullPrompt
+      && incoming.promptOrder.every(id => (existing[id] || '') === (incoming[id] || ''))) {
+      merged.promptOrder = incoming.promptOrder;
+    }
     merged.characterIds = [...new Set([...artworkCharacterIds(existing), ...artworkCharacterIds(incoming)])];
     merged.characterId = merged.characterIds[0] || '';
   }

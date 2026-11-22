@@ -198,6 +198,9 @@ html[data-theme] .recipe-copy-row,html[data-theme] .character-field,html[data-th
 .dialog-head {padding-bottom:20px;margin-bottom:24px;border-bottom:1px solid var(--line)}
 .dialog-head h2 {font-size:22px;font-weight:600;line-height:1.4}
 .dialog-head p {font-size:13px;line-height:1.8;margin-top:8px}
+.image-dialog-meta-row {display:flex;align-items:center;gap:4px;color:var(--muted);font-size:11px;line-height:1.5}
+.image-dialog-meta-row .flat-help.flat-tool {margin-left:0}
+#imageDialogOrder {order:1;overflow-wrap:anywhere}
 .dialog-actions {padding-top:20px;margin-top:26px;border-top:1px solid var(--line)}
 .theme-option,.backup-mode,.restore-stat,.backup-summary,.image-prompt-row,.batch-bar {border-radius:0;box-shadow:none;background:var(--input)}
 .theme-option {padding:16px}

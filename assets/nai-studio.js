@@ -240,7 +240,7 @@ document.querySelectorAll('.copy-btn[data-copy]').forEach(button => {
 let reusedImagePrompt = null;
 
 function orderedPromptParts(separateCharacters = false) {
-  return generationPromptOrder().filter(id => !separateCharacters || id !== 'characterPrompt')
+  return promptOrder.current().filter(id => !separateCharacters || id !== 'characterPrompt')
     .map(id => $(id).value.trim()).filter(Boolean);
 }
 
@@ -1541,6 +1541,9 @@ function openImageDialog(item) {
   const recipe = recipesCache.find(value => value.id === item.recipeId);
   $('imageDialogTitle').textContent = item.title || '图片记录';
   $('imageDialogMeta').textContent = `${recipe?.name || '未关联配方'} · ${shortModel(item.model || '未知模型')} · ${item.size || '未知尺寸'} · ${recordTimeText(item, item.imported ? '导入时间' : '生成时间')}`;
+  const order = promptOrder.forArtwork(item);
+  const orderLabel = order && !promptOrder.valid(item.promptOrder) ? '当时词序（还原）' : '当时词序';
+  $('imageDialogOrder').textContent = `${orderLabel} · ${order ? promptOrder.describe(order) : '未记录'}`;
   if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
   imagePreviewUrl = URL.createObjectURL(item.blob);
   $('imageDialogPreview').src = imagePreviewUrl;
@@ -1748,6 +1751,7 @@ function reuseArtwork(item) {
   const split = extractArtistPrompt(raw);
   const originalSplit = raw && $('artistPrompt').value === split.artist && $('positivePrompt').value === split.remaining;
   const separate = captions.positive.length > 0;
+  const restoredOrder = promptOrder.restore(promptOrder.forArtwork(item));
   reusedImagePrompt = {
     raw: (originalSplit ? raw : item.baseCaption) || '',
     parts: JSON.stringify(orderedPromptParts(separate)),
@@ -1773,7 +1777,7 @@ function reuseArtwork(item) {
   updateModelUI();
   saveSettings();
   switchView('create');
-  toast('图片配方已带回创作台');
+  if (restoredOrder) toast('图片配方已带回创作台');
 }
 
 function updatePickerCharacterCount() {

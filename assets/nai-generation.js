@@ -30,7 +30,7 @@ function collectMeta() {
     characterIds: linkedCharacters.map(character => character.id), characterNames: linkedCharacters.map(character => character.name),
     characterId: linkedCharacters[0]?.id || '', characterName: linkedCharacters[0]?.name || '', artistPrompt: $('artistPrompt').value.trim(),
     positivePrompt: $('positivePrompt').value.trim(), baseNegativePrompt, negativePrompt: isMedium ? '' : negativePrompt,
-    fullPrompt: fullPrompt(), model: $('model').value, size: $('size').value,
+    fullPrompt: fullPrompt(), promptOrder: [...promptOrder.current()], model: $('model').value, size: $('size').value,
     ...(characterCaptions ? { characterCaptions, baseCaption: fullPrompt(true) } : {}),
     recipeId: recipe?.id || '', category: recipe?.name || '未分类', tags: splitTags($('tags').value),
     steps: isMedium ? 14 : Number($('steps').value) || 28, scale: $('scale').value.trim() === '' ? 7 : Number($('scale').value),
