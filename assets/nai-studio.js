@@ -142,6 +142,10 @@ function samplerName(value = '') {
   return ({ k_euler_ancestral: 'Euler A', k_euler: 'Euler', k_dpmpp_2s_ancestral: 'DPM++ 2S A', k_dpmpp_2m_sde: 'DPM++ 2M SDE', k_dpmpp_2m: 'DPM++ 2M', k_dpmpp_sde: 'DPM++ SDE' })[value] || value;
 }
 
+function noiseScheduleName(value) {
+  return Array.from($('noiseSchedule').options).find(option => option.value === value)?.text || value;
+}
+
 function shortModel(model = '') {
   return String(model).replace(/^nai-diffusion-4-5/, 'V4.5').replace(/^nai-diffusion-(\d+)/, 'V$1').replaceAll('-', ' ');
 }
@@ -827,6 +831,7 @@ function applyRecipe(recipe, includeParams = true) {
     Object.entries(pickParams(recipe.defaultParams || {})).forEach(([key, value]) => {
       const element = $(key);
       if (!element || key === 'size' || value === undefined || value === null || (key === 'model' && !value)) return;
+      if (key === 'noiseSchedule' && !Array.from(element.options).some(option => option.value === value)) return;
       if (element.type === 'checkbox') element.checked = Boolean(value);
       else element.value = value;
     });
@@ -864,6 +869,12 @@ function openRecipeEditor(recipe = null, prefillCurrent = false) {
   $('recipeScale').value = params.scale ?? '';
   $('recipeModel').value = params.model || '';
   $('recipeSampler').value = params.sampler || 'k_euler_ancestral';
+  const noiseSchedule = $('recipeNoiseSchedule');
+  noiseSchedule.replaceChildren(noiseSchedule.options[0], ...Array.from($('noiseSchedule').options, option => option.cloneNode(true)));
+  noiseSchedule.value = params.noiseSchedule || '';
+  if (params.noiseSchedule && !noiseSchedule.value) {
+    noiseSchedule.add(new Option(params.noiseSchedule, params.noiseSchedule, false, true));
+  }
   $('recipeVarietyPlus').value = typeof params.varietyPlus === 'boolean' ? String(params.varietyPlus) : '';
   showDialog('recipeDialog');
   setTimeout(() => $('recipeName').focus(), 50);
@@ -904,6 +915,7 @@ $('recipeForm').onsubmit = async event => {
       scale: $('recipeScale').value.trim() === '' ? undefined : Number($('recipeScale').value),
       steps: Number($('recipeSteps').value) || 28,
       sampler: $('recipeSampler').value,
+      noiseSchedule: $('recipeNoiseSchedule').value || undefined,
       varietyPlus: $('recipeVarietyPlus').value === '' ? undefined : $('recipeVarietyPlus').value === 'true'
     }
   };
@@ -1509,7 +1521,7 @@ async function showReturnedImageValues(item) {
     const note = !hasNegative ? '原图没有可读取的负面词记录，无法核实。' : same ? '原图记录与档案保存的负面词一致。' : '原图记录与档案保存的负面词不同；原填写内容已保留。';
     const params = [
       'steps' in values ? '原图记录 ' + values.steps + ' Steps' : '', 'scale' in values ? 'Guidance ' + values.scale : '',
-      values.sampler ? samplerName(values.sampler) : '', values.noiseSchedule || '',
+      values.sampler ? samplerName(values.sampler) : '', values.noiseSchedule ? `噪声调度 ${noiseScheduleName(values.noiseSchedule)}` : '',
       'seed' in values ? 'Seed ' + values.seed : '',
       'varietyPlus' in values ? 'Variety+ ' + (values.varietyPlus ? '开启' : '关闭') : ''
     ].filter(Boolean);
@@ -1536,9 +1548,11 @@ function openImageDialog(item) {
   const people = artworkCharacterNames(item);
   const recorded = item.imported && item.rawMetadata?.parsed
     ? reportedImageValues({ text: { metadata: item.rawMetadata.parsed } }) : item;
+  const noiseSchedule = recorded.noiseSchedule || item.noiseSchedule;
   $('imageParameterStrip').innerHTML = [
     ...people.map(name => `人物：${name}`), shortModel(item.model || '未知模型'), item.size || '未知尺寸',
     recorded.steps ? `${item.imported ? '原图记录' : '请求'} ${recorded.steps} Steps` : '', recorded.sampler ? samplerName(recorded.sampler) : '',
+    noiseSchedule ? `噪声调度 ${noiseScheduleName(noiseSchedule)}` : '',
     recorded.scale !== undefined && recorded.scale !== '' ? `Guidance ${recorded.scale}` : '',
     typeof item.varietyPlus === 'boolean' ? `Variety+ ${item.varietyPlus ? '开启' : '关闭'}` : ''
   ].filter(Boolean).map(value => `<span class="chip">${escapeHTML(value)}</span>`).join('');
