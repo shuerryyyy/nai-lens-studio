@@ -1,0 +1,37 @@
+#pwaHelp { margin-top: 20px; }
+#pwaHelp summary { cursor: pointer; min-height: 44px; padding-block: 10px; }
+#pwaHelp p, #pwaHelp li { margin-block: 8px; font-size: 14px; }
+#pwaHelp ul { padding-inline-start: 1.5em; }
+
+/* Reuse the visual viewport measurements maintained by the existing editor. */
+html[data-standalone] {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+html[data-standalone] body {
+  padding: var(--safe-top) var(--safe-right) 0 var(--safe-left);
+}
+html[data-standalone] .topbar { top: var(--safe-top); }
+html[data-standalone] .rail {
+  top: var(--safe-top);
+  height: calc(100dvh - var(--safe-top) - var(--safe-bottom));
+}
+html[data-standalone] .mobile-nav { left: var(--safe-left); right: var(--safe-right); width: auto; }
+@media (max-width:760px), (pointer:coarse) {
+  html[data-standalone] .dialog {
+    top: calc(var(--nai-viewport-top, 0px) + var(--safe-top) + 8px);
+    bottom: auto;
+    margin-block: 0;
+    max-width: calc(100% - var(--safe-left) - var(--safe-right) - 16px);
+    max-height: calc(var(--nai-viewport-height, 100dvh) - var(--safe-top) - var(--safe-bottom) - 16px);
+  }
+  html[data-standalone] #wordEditorDialog {
+    top: calc(var(--nai-viewport-top, 0px) + var(--safe-top));
+    right: var(--safe-right);
+    height: calc(var(--nai-viewport-height, 100dvh) - var(--safe-top) - var(--safe-bottom));
+    max-height: none;
+    max-width: calc(100% - var(--safe-left) - var(--safe-right));
+  }
+}
