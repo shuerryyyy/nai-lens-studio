@@ -1,58 +1,81 @@
 'use strict';
 /* Image import preview and atomic archive controller. */
 
-async function beginImageImport(file, targetRecipeId = '', targetWordId = '') {
-  pendingImport = { file, targetRecipeId, targetWordId, metadata: null };
-  const importing = pendingImport;
-  const submit = $('imageImportForm').querySelector('[type="submit"]');
-  submit.disabled = true;
+function resetImageImport() {
   if (importPreviewUrl) URL.revokeObjectURL(importPreviewUrl);
+  importPreviewUrl = '';
+  pendingImport = null;
+  $('importPreview').removeAttribute('src');
+}
+
+async function beginImageImport(file, targetRecipeId = '', targetWordId = '') {
+  resetImageImport();
+  const filename = file.name.replace(/\.(png|webp|jpe?g)$/i, '');
+  const importing = { file, targetWordId, filename, metadata: null, validImage: false };
+  pendingImport = importing;
+  $('saveRecipeBtn').disabled = true;
+  fillRecipeEditor({ name: filename });
   importPreviewUrl = URL.createObjectURL(file);
   $('importPreview').src = importPreviewUrl;
-  $('importStatus').textContent = '正在读取 PNG 中的生成信息……';
-  $('importArtist').value = '';
-  $('importPositive').value = '';
-  $('importNegative').value = '';
+  $('importStatus').textContent = '正在读取图片的生成信息……';
   $('importRawPrompt').value = '';
   $('importRawMeta').textContent = '';
-  $('importRecipeName').value = file.name.replace(/\.(png|webp|jpe?g)$/i, '');
+  $('importRawDetails').querySelector('details').open = false;
+  $('importImageSize').value = '';
+  $('importImageSeed').value = '';
   $('importRecipeMode').value = targetRecipeId ? 'existing' : targetWordId ? 'none' : 'new';
   $('importRecipeSelect').value = targetRecipeId || recipesCache[0]?.id || '';
   updateImportMode();
-  showDialog('imageImportDialog');
+  showDialog('recipeDialog');
+  $('recipeDialog').scrollTop = 0;
   try {
-    const png = await readImageMetadata(file);
-    if (pendingImport !== importing) return;
-    const metadata = extractNovelAIMetadata(png);
-    pendingImport.metadata = metadata;
+    const image = await readImageMetadata(file);
+    if (pendingImport !== importing || !$('recipeDialog').open) return;
+    const metadata = extractNovelAIMetadata(image);
+    importing.metadata = metadata;
     importing.validImage = true;
-    $('importArtist').value = metadata.artistPrompt;
-    $('importPositive').value = metadata.positivePrompt;
-    $('importNegative').value = metadata.negativePrompt;
+    const artistName = metadata.artistPrompt.replace(/[{}[\]]/g, '').slice(0, 36);
+    fillRecipeEditor({ ...metadata, name: artistName || filename, defaultParams: pickParams(metadata) });
+    $('importImageSize').value = metadata.size || '';
+    $('importImageSeed').value = metadata.seed || '';
     $('importRawPrompt').value = metadata.rawPrompt;
     $('importRawMeta').textContent = JSON.stringify(metadata.raw, null, 2);
-    const artistName = metadata.artistPrompt.replace(/[{}[\]]/g, '').slice(0, 36);
-    $('importRecipeName').value = artistName || file.name.replace(/\.(png|webp|jpe?g)$/i, '');
     $('importStatus').textContent = metadata.rawPrompt || metadata.negativePrompt
-      ? '已读取图片内嵌信息；自动拆分后请确认三项内容。'
+      ? '已填入图片中的提示词与生成参数，保存前可以修改。'
       : '图片中没有可识别的 NovelAI 提示词，可能经过截图或平台转码；仍可手动填写并归档。';
     if (metadata.splitWarning) $('importStatus').textContent += ` ${metadata.splitWarning}`;
-    if (png.text.ReadWarning) $('importStatus').textContent += ` ${png.text.ReadWarning}。`;
+    if (image.text.ReadWarning) $('importStatus').textContent += ` ${image.text.ReadWarning}。`;
   } catch (error) {
     try { await validateGeneratedImage(file); importing.validImage = true; } catch {}
-    if (pendingImport !== importing) return;
+    if (pendingImport !== importing || !$('recipeDialog').open) return;
     $('importStatus').textContent = importing.validImage
       ? `解析失败：${error.message}。仍可手动填写配方后保存图片。`
       : '无法解码图片，请选择有效的 PNG、JPEG 或 WebP 文件。';
   } finally {
-    if (pendingImport === importing) submit.disabled = !importing.validImage;
+    if (pendingImport === importing && $('recipeDialog').open) {
+      updateImportMode();
+      $('saveRecipeBtn').disabled = !importing.validImage;
+    }
   }
 }
 
 function updateImportMode() {
-  const mode = $('importRecipeMode').value;
-  $('importNameWrap').hidden = mode !== 'new';
+  const mode = pendingImport ? $('importRecipeMode').value : '';
+  const showRecipeFields = !mode || mode === 'new';
+  $('recipeImport').hidden = !mode;
+  $('recipeEditorBody').hidden = Boolean(pendingImport && !pendingImport.validImage);
   $('importExistingWrap').hidden = mode !== 'existing';
+  $('recipeNameWrap').hidden = $('recipeOptions').hidden = !showRecipeFields;
+  $('recipeName').disabled = !showRecipeFields;
+  $('recipeOptions').querySelectorAll('input, select, textarea').forEach(input => { input.disabled = !showRecipeFields; });
+  $('importImageSizeWrap').hidden = !$('importImageSize').value;
+  $('importImageSeedWrap').hidden = !$('importImageSeed').value;
+  $('importImageParams').hidden = !mode || ($('importImageSizeWrap').hidden && $('importImageSeedWrap').hidden);
+  $('importRawDetails').hidden = !mode;
+  document.querySelectorAll('[data-import-copy]').forEach(button => { button.hidden = !mode; });
+  document.querySelectorAll('[data-recipe-pick]').forEach(button => { button.hidden = !showRecipeFields; });
+  if (mode) $('recipeDialogTitle').textContent = mode === 'new' ? '从图片新建配方' : '解析 NovelAI 图片';
+  $('saveRecipeBtn').textContent = !mode ? '保存配方' : mode === 'new' ? '保存图片与配方' : '保存图片';
 }
 
 $('importRecipeMode').addEventListener('change', updateImportMode);
@@ -68,13 +91,10 @@ document.querySelectorAll('[data-import-copy]').forEach(button => {
   button.onclick = () => copyText($(button.dataset.importCopy).value, button);
 });
 
-$('imageImportForm').onsubmit = async event => {
-  event.preventDefault();
-  if (!pendingImport?.validImage) return;
-  const submit = $('imageImportForm').querySelector('[type="submit"]');
-  if (submit.disabled) return;
+async function saveImageImport(importing) {
+  if (!importing.validImage) return;
+  const submit = $('saveRecipeBtn');
   submit.disabled = true;
-  const importing = pendingImport;
   let saved = false;
   try {
   if (importing.targetWordId && !words().some(word => word.id === importing.targetWordId)) throw new Error('词条已不存在，请重新选择例图归属');
@@ -82,14 +102,8 @@ $('imageImportForm').onsubmit = async event => {
   let recipeId = '';
   let recipe = null;
   if (mode === 'new') {
-    const name = $('importRecipeName').value.trim();
-    if (!name) { toast('请填写新配方名称'); return; }
-    recipe = {
-      id: makeId(), name, artistPrompt: $('importArtist').value.trim(),
-      positivePrompt: $('importPositive').value.trim(), negativePrompt: $('importNegative').value.trim(),
-      tags: [], coverArtworkId: null, createdAt: Date.now(), updatedAt: Date.now(),
-      manualOrder: -Date.now(), defaultParams: pickParams(importing.metadata || {}), source: 'png-import'
-    };
+    if (!$('recipeName').value.trim()) { toast('请填写新配方名称'); return; }
+    recipe = { ...readRecipeEditor(null, pickParams(importing.metadata || {})), source: 'png-import' };
     recipeId = recipe.id;
   } else if (mode === 'existing') {
     recipeId = $('importRecipeSelect').value;
@@ -99,11 +113,11 @@ $('imageImportForm').onsubmit = async event => {
   const metadata = importing.metadata || {};
   const captions = imageCharacterCaptions(metadata.raw?.parsed);
   const artwork = {
-    title: importing.file.name.replace(/\.(png|webp|jpe?g)$/i, ''),
+    title: importing.filename,
     scenePrompt: '', sourcePrompt: metadata.rawPrompt || '',
     characterPrompt: captions.positive.map(item => item.char_caption).filter(Boolean).join(', '),
-    artistPrompt: $('importArtist').value.trim(), positivePrompt: $('importPositive').value.trim(),
-    negativePrompt: $('importNegative').value.trim(), fullPrompt: metadata.rawPrompt || '',
+    artistPrompt: $('recipeArtist').value.trim(), positivePrompt: $('recipePositive').value.trim(),
+    negativePrompt: $('recipeNegative').value.trim(), fullPrompt: metadata.rawPrompt || '',
     model: metadata.model || '', size: metadata.size || '', steps: metadata.steps ?? '',
     scale: metadata.scale ?? '', seed: metadata.seed || '', sampler: metadata.sampler || '',
     noiseSchedule: metadata.noiseSchedule || '', recipeId,
@@ -126,11 +140,14 @@ $('imageImportForm').onsubmit = async event => {
     });
   });
   saved = true;
-  if (pendingImport === importing) { closeDialog('imageImportDialog'); pendingImport = null; }
+  if (pendingImport === importing) {
+    closeDialog('recipeDialog');
+    resetImageImport();
+  }
   await refreshData();
   if (importing.targetWordId) { expandedWordId = importing.targetWordId; switchView('words'); }
   else { if (recipeId) inspectRecipe(recipesCache.find(item => item.id === recipeId)); switchView('gallery'); }
   toast(importing.targetWordId ? '例图已保存到词条' : recipeId ? '图片与配方已归档' : '图片已保存，未关联配方');
   } catch (error) { toast(saved ? '图片已保存，但列表刷新未完成：' + error.message + '；请刷新查看。' : '导入失败：' + error.message + '；文件与表单已保留。'); }
-  finally { submit.disabled = false; }
-};
+  finally { if (pendingImport === importing || !$('recipeDialog').open) submit.disabled = false; }
+}

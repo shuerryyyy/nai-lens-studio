@@ -175,12 +175,7 @@ document.querySelectorAll('dialog').forEach(dialog => {
       imagePreviewUrl = '';
       $('imageDialogPreview').removeAttribute('src');
     }
-    if (dialog.id === 'imageImportDialog') {
-      if (importPreviewUrl) URL.revokeObjectURL(importPreviewUrl);
-      importPreviewUrl = '';
-      pendingImport = null;
-      $('importPreview').removeAttribute('src');
-    }
+    if (dialog.id === 'recipeDialog' && pendingImport) resetImageImport();
   });
   dialog.addEventListener('click', event => {
     if (event.target === dialog) dialog.close();
@@ -831,7 +826,7 @@ function applyRecipe(recipe, includeParams = true) {
     Object.entries(pickParams(recipe.defaultParams || {})).forEach(([key, value]) => {
       const element = $(key);
       if (!element || key === 'size' || value === undefined || value === null || (key === 'model' && !value)) return;
-      if (key === 'noiseSchedule' && !Array.from(element.options).some(option => option.value === value)) return;
+      if (element.tagName === 'SELECT' && !Array.from(element.options).some(option => option.value === value)) return;
       if (element.type === 'checkbox') element.checked = Boolean(value);
       else element.value = value;
     });
@@ -853,50 +848,69 @@ $('recipeSelect').addEventListener('change', () => {
   }
 });
 
-function openRecipeEditor(recipe = null, prefillCurrent = false) {
-  const params = recipe?.defaultParams || (prefillCurrent ? collectMeta() : {});
-  $('recipeDialogTitle').textContent = recipe ? '编辑配方档案' : '新建配方档案';
-  $('recipeEditId').value = recipe?.id || '';
-  $('recipeName').value = recipe?.name || '';
-  $('recipeArtist').value = recipe?.artistPrompt || (prefillCurrent ? $('artistPrompt').value : '');
-  $('recipePositive').value = recipe?.positivePrompt || (prefillCurrent ? $('positivePrompt').value : '');
-  $('recipeNegative').value = recipe?.negativePrompt || (prefillCurrent ? baseNegativePrompt() : '');
-  $('recipeTags').value = (recipe?.tags || (prefillCurrent ? splitTags($('tags').value) : [])).join(', ');
-  $('recipeAuthor').value = recipe?.author || '';
-  $('recipeNote').value = recipe?.note || '';
-  $('recipeSourceUrl').value = recipe?.sourceUrl || '';
-  $('recipeSteps').value = Number(params.steps) || 28;
-  $('recipeScale').value = params.scale ?? '';
-  $('recipeModel').value = params.model || '';
-  $('recipeSampler').value = params.sampler || 'k_euler_ancestral';
+function setRecipeSelectValue(select, value = '', label = value) {
+  select.querySelector('[data-custom-option]')?.remove();
+  if (value && !Array.from(select.options).some(option => option.value === value)) {
+    const option = new Option(label, value);
+    option.dataset.customOption = '';
+    select.add(option);
+  }
+  select.value = value;
+}
+
+function fillRecipeEditor(recipe = {}, useDefaults = false) {
+  const params = recipe.defaultParams || {};
+  $('recipeEditId').value = recipe.id || '';
+  $('recipeName').value = recipe.name || '';
+  $('recipeArtist').value = recipe.artistPrompt || '';
+  $('recipePositive').value = recipe.positivePrompt || '';
+  $('recipeNegative').value = recipe.negativePrompt || '';
+  $('recipeTags').value = (recipe.tags || []).join(', ');
+  $('recipeAuthor').value = recipe.author || '';
+  $('recipeNote').value = recipe.note || '';
+  $('recipeSourceUrl').value = recipe.sourceUrl || '';
+  const steps = $('recipeSteps');
+  steps.max = Math.max(50, Number(params.steps) || 0);
+  steps.value = Number(params.steps) || (useDefaults ? 28 : '');
+  const scale = $('recipeScale');
+  scale.max = Math.max(20, Number(params.scale) || 0);
+  scale.step = useDefaults ? '0.1' : 'any';
+  scale.value = params.scale ?? '';
+  setRecipeSelectValue($('recipeModel'), params.model || '');
+  const sampler = params.sampler || (useDefaults ? 'k_euler_ancestral' : '');
+  setRecipeSelectValue($('recipeSampler'), sampler, samplerName(sampler));
   const noiseSchedule = $('recipeNoiseSchedule');
   noiseSchedule.replaceChildren(noiseSchedule.options[0], ...Array.from($('noiseSchedule').options, option => option.cloneNode(true)));
-  noiseSchedule.value = params.noiseSchedule || '';
-  if (params.noiseSchedule && !noiseSchedule.value) {
-    noiseSchedule.add(new Option(params.noiseSchedule, params.noiseSchedule, false, true));
-  }
+  setRecipeSelectValue(noiseSchedule, params.noiseSchedule || '');
   $('recipeVarietyPlus').value = typeof params.varietyPlus === 'boolean' ? String(params.varietyPlus) : '';
+}
+
+function openRecipeEditor(recipe = null, prefillCurrent = false) {
+  resetImageImport();
+  updateImportMode();
+  $('recipeDialogTitle').textContent = recipe ? '编辑配方档案' : '新建配方档案';
+  $('saveRecipeBtn').disabled = false;
+  const draft = prefillCurrent ? {
+    artistPrompt: $('artistPrompt').value,
+    positivePrompt: $('positivePrompt').value,
+    negativePrompt: baseNegativePrompt(),
+    tags: splitTags($('tags').value),
+    defaultParams: collectMeta()
+  } : {};
+  fillRecipeEditor(recipe || draft, !recipe);
   showDialog('recipeDialog');
-  setTimeout(() => $('recipeName').focus(), 50);
+  setTimeout(() => { if (!pendingImport && $('recipeDialog').open) $('recipeName').focus(); }, 50);
 }
 
 $('newRecipeBtn').onclick = () => openRecipeEditor(null, true);
 $('galleryNewRecipeBtn').onclick = () => openRecipeEditor();
 $('saveBundleBtn').onclick = () => openRecipeEditor(null, true);
 
-$('recipeForm').onsubmit = async event => {
-  event.preventDefault();
-  const submit = $('recipeForm').querySelector('[type="submit"]');
-  if (submit.disabled) return;
-  if (!$('recipeScale').checkValidity()) { $('recipeScale').reportValidity(); return; }
-  submit.disabled = true;
-  let saved = false;
-  try {
-  const id = $('recipeEditId').value;
-  const old = id ? await dbGet('recipes', id) : null;
-  const recipe = {
+function readRecipeEditor(old, initialParams) {
+  const now = Date.now();
+  return {
     ...old,
-    id: id || makeId(),
+    id: old?.id || makeId(),
     name: $('recipeName').value.trim(),
     artistPrompt: $('recipeArtist').value.trim(),
     positivePrompt: $('recipePositive').value.trim(),
@@ -906,19 +920,33 @@ $('recipeForm').onsubmit = async event => {
     note: $('recipeNote').value.trim(),
     sourceUrl: $('recipeSourceUrl').value.trim(),
     coverArtworkId: old?.coverArtworkId || null,
-    createdAt: old?.createdAt || Date.now(),
-    updatedAt: Date.now(),
-    manualOrder: old?.manualOrder ?? -Date.now(),
+    createdAt: old?.createdAt || now,
+    updatedAt: now,
+    manualOrder: old?.manualOrder ?? -now,
     defaultParams: {
-      ...(old?.defaultParams || pickParams(collectMeta())),
+      ...initialParams,
       model: $('recipeModel').value || undefined,
       scale: $('recipeScale').value.trim() === '' ? undefined : Number($('recipeScale').value),
-      steps: Number($('recipeSteps').value) || 28,
-      sampler: $('recipeSampler').value,
+      steps: $('recipeSteps').value === '' ? undefined : Number($('recipeSteps').value),
+      sampler: $('recipeSampler').value || undefined,
       noiseSchedule: $('recipeNoiseSchedule').value || undefined,
       varietyPlus: $('recipeVarietyPlus').value === '' ? undefined : $('recipeVarietyPlus').value === 'true'
     }
   };
+}
+
+$('recipeForm').onsubmit = async event => {
+  event.preventDefault();
+  const submit = $('saveRecipeBtn');
+  if (submit.disabled) return;
+  if (pendingImport) return saveImageImport(pendingImport);
+  submit.disabled = true;
+  let saved = false;
+  try {
+  const id = $('recipeEditId').value;
+  const old = id ? await dbGet('recipes', id) : null;
+  if (id && !old) throw new Error('配方已被删除，请重新打开编辑器');
+  const recipe = readRecipeEditor(old, old?.defaultParams || pickParams(collectMeta()));
   await dbPut('recipes', recipe);
   saved = true;
   closeDialog('recipeDialog');

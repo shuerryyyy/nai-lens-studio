@@ -176,6 +176,16 @@ function mergeRecord(existing, incoming, type = '') {
   return { record: merged, changed };
 }
 
+function recipeBackupKey(recipe) {
+  // Old backups lack transfer IDs. Require the original ID plus creation details.
+  const originalId = String(recipe.backupSourceId ?? recipe.id ?? '');
+  const createdAt = Number(recipe.createdAt);
+  if (!originalId) return '';
+  return JSON.stringify(Number.isFinite(createdAt) && createdAt > 0
+    ? [originalId, createdAt]
+    : [originalId, recipe.name || '', recipeContentKey(recipe)]);
+}
+
 function prepareRecordPlan(incoming, existing, keyFn, type) {
   const idMap = new Map();
   const additions = [];
@@ -190,7 +200,9 @@ function prepareRecordPlan(incoming, existing, keyFn, type) {
   incoming.forEach(source => {
     const oldKey = String(source.id ?? '');
     const contentKey = keyFn(source);
-    const matched = (source.transferId && byTransferId.get(source.transferId)) || (contentKey && byContent.get(contentKey));
+    const fallback = contentKey && byContent.get(contentKey);
+    const hasDifferentRecipeIdentity = type === 'recipe' && source.transferId && fallback?.transferId;
+    const matched = (source.transferId && byTransferId.get(source.transferId)) || (!hasDifferentRecipeIdentity && fallback);
     if (matched) {
       if (oldKey) idMap.set(oldKey, matched.id);
       const merged = mergeRecord(matched, source, type);
@@ -212,6 +224,7 @@ function prepareRecordPlan(incoming, existing, keyFn, type) {
       newId = makeId();
     }
     const record = { ...source, id: newId };
+    if (type === 'recipe' && oldKey && String(newId) !== oldKey) record.backupSourceId = source.backupSourceId ?? oldKey;
     usedIds.add(String(newId));
     if (oldKey) idMap.set(oldKey, newId);
     additions.push(record);
@@ -268,7 +281,7 @@ function normalizeBackupPayload(input) {
   };
 }
 
-async function analyzeBackupImport(data) {
+async function analyzeBackupImport(data, restoreRecipeLinks = false) {
   data = normalizeBackupPayload(data);
   const collectionPlan = prepareRecordPlan(data.collections, await dbAll('collections'), item => `${item.libraryType}:${item.name.trim().toLocaleLowerCase()}`, 'collection');
   for (const type of ['artworks', 'recipes', 'words', 'characters']) {
@@ -285,7 +298,8 @@ async function analyzeBackupImport(data) {
   const existingWords = words();
   const existingCharacters = characters();
   const characterPlan = prepareRecordPlan(data.characters, existingCharacters, characterContentKey, 'character');
-  const recipePlan = prepareRecordPlan(data.recipes, existingRecipes, recipeContentKey, 'recipe');
+  const recipePlan = prepareRecordPlan(data.recipes, existingRecipes, recipeBackupKey, 'recipe');
+  const sourceRecipeNames = new Map(data.recipes.map(recipe => [String(recipe.id), recipe.name]));
   const wordPlan = prepareRecordPlan(data.words, existingWords, wordContentKey, 'word');
   for (const artwork of data.artworks) {
     if (Array.isArray(artwork.wordSources)) artwork.wordSources = artwork.wordSources.filter(source => source && typeof source.content === 'string').map(source => ({ ...source, wordId: wordPlan.idMap.get(String(source.wordId)) || '' }));
@@ -294,26 +308,45 @@ async function analyzeBackupImport(data) {
   const artworkIdMap = new Map();
   const additions = [];
   const merges = [];
+  const restoredRecipeLinks = new Map();
+  let artworkRecipeLinkCount = 0;
   let skipped = 0;
   const byHash = new Map();
   for (const item of existingArtworks) {
     const cached = crypto.subtle ? /^[a-f0-9]{64}$/.test(item.contentHash || '') : /^fnv-/.test(item.contentHash || '');
     const hash = cached ? item.contentHash : await blobFingerprint((await dbGet('artworks', item.id)).blob);
     const { _backupBlobSize, ...record } = item;
-    byHash.set(hash, record);
+    if (!byHash.has(hash)) byHash.set(hash, []);
+    byHash.get(hash).push(record);
   }
   for (const source of data.artworks) {
     const blob = await b64Blob(source.blob);
     const hash = await blobFingerprint(blob);
-    const matched = byHash.get(hash);
+    const candidates = byHash.get(hash) || [];
     const oldKey = String(source.id ?? '');
+    const sourceRecipeId = source.recipeId || '';
+    const mappedRecipeId = recipePlan.idMap.get(String(sourceRecipeId));
+    const recipeId = mappedRecipeId || sourceRecipeId;
+    const sameArtwork = source.transferId && candidates.find(item => item.transferId === source.transferId);
+    const matched = sameArtwork || candidates.find(item => !recipeId || item.recipeId === recipeId);
+    const mappedCharacterIds = artworkCharacterIds(source).map(id => characterPlan.idMap.get(String(id)) || id);
     if (matched) {
       if (oldKey) {
         if (matched._oldIds) matched._oldIds.push(oldKey);
         else artworkIdMap.set(oldKey, matched.id);
       }
-      const mappedSource = { ...source, characterIds: artworkCharacterIds(source).map(id => characterPlan.idMap.get(String(id)) || id), blob, contentHash: hash };
+      const mappedSource = { ...source, characterIds: mappedCharacterIds, blob, contentHash: hash };
       const merged = mergeRecord(matched, mappedSource, 'artwork');
+      if (sameArtwork && mappedRecipeId && matched.recipeId !== mappedRecipeId && !matched._oldIds) {
+        artworkRecipeLinkCount += 1;
+        if (restoreRecipeLinks) {
+          restoredRecipeLinks.set(matched.id, { recipeId: matched.recipeId, updatedAt: matched.updatedAt });
+          merged.record.recipeId = mappedRecipeId;
+          merged.record.category = source.category || sourceRecipeNames.get(String(sourceRecipeId)) || '';
+          merged.record.updatedAt = Date.now();
+          merged.changed = true;
+        }
+      }
       if (merged.changed) {
         merged.record.blob = matched.blob || blob;
         merged.record.contentHash = hash;
@@ -323,11 +356,18 @@ async function analyzeBackupImport(data) {
       else skipped += 1;
       continue;
     }
-    const mappedCharacterIds = artworkCharacterIds(source).map(id => characterPlan.idMap.get(String(id)) || id);
-    additions.push({ ...source, id: undefined, recipeId: recipePlan.idMap.get(String(source.recipeId || '')) || source.recipeId || '', characterIds: mappedCharacterIds, characterId: mappedCharacterIds[0] || '', blob, contentHash: hash, _oldIds: oldKey ? [oldKey] : [] });
-    byHash.set(hash, additions[additions.length - 1]);
+    const record = { ...source, id: undefined, recipeId, characterIds: mappedCharacterIds, characterId: mappedCharacterIds[0] || '', blob, contentHash: hash, _oldIds: oldKey ? [oldKey] : [] };
+    additions.push(record);
+    candidates.push(record);
+    byHash.set(hash, candidates);
   }
-  const plans = { data, collectionPlan, vibeRecords, characterPlan, recipePlan, wordPlan, artworkPlan: { additions, merges, skipped, idMap: artworkIdMap } };
+  for (const recipe of existingRecipes) {
+    const previous = restoredRecipeLinks.get(recipe.coverArtworkId);
+    if (!previous || previous.recipeId !== recipe.id) continue;
+    recipe.coverArtworkId = null;
+    if (!recipePlan.merges.includes(recipe)) recipePlan.merges.push(recipe);
+  }
+  const plans = { data, collectionPlan, vibeRecords, characterPlan, recipePlan, wordPlan, artworkPlan: { additions, merges, skipped, idMap: artworkIdMap, restoredRecipeLinks } };
   plans.stats = {
     added: additions.length + recipePlan.additions.length + wordPlan.additions.length + characterPlan.additions.length,
     merged: merges.length + recipePlan.merges.length + wordPlan.merges.length + characterPlan.merges.length,
@@ -338,6 +378,8 @@ async function analyzeBackupImport(data) {
     artworkSkipped: skipped, recipeSkipped: recipePlan.skipped, wordSkipped: wordPlan.skipped, characterSkipped: characterPlan.skipped
   };
   plans.stats.vibeCount = vibeRecords.length;
+  plans.stats.artworkRecipeLinkCount = artworkRecipeLinkCount;
+  plans.stats.artworkRecipeLinksRestored = restoredRecipeLinks.size;
   plans.stats.collectionCount = collectionPlan.additions.length;
   plans.stats.added += collectionPlan.additions.length;
   plans.stats.merged += collectionPlan.merges.length;
@@ -348,14 +390,14 @@ async function analyzeBackupImport(data) {
   return plans;
 }
 
-async function restoreBackupData(data) {
+async function restoreBackupData(data, restoreRecipeLinks = false) {
   if (restoreInProgress) throw new Error('另一个备份正在恢复，请稍后再试');
   restoreInProgress = true;
   const previousCharacters = localStorage.getItem(CHARACTERS_KEY);
   const previousWords = localStorage.getItem(WORDS_KEY);
   let localWritten = false;
   try {
-  const plan = await analyzeBackupImport(data);
+  const plan = await analyzeBackupImport(data, restoreRecipeLinks);
   const existingCharacters = characters();
   const existingWords = words();
   const replaceMerged = (existing, merges) => {
@@ -372,8 +414,9 @@ async function restoreBackupData(data) {
   const artworkMerges = await Promise.all(plan.artworkPlan.merges.map(artworkForStorage));
   await new Promise((resolve, reject) => {
   const transaction = db.transaction(['artworks', 'recipes', 'vibes', 'collections'], 'readwrite');
+  let failure;
   transaction.oncomplete = resolve;
-  transaction.onabort = () => reject(transaction.error || new Error('备份恢复写入失败，图片与配方已撤销'));
+  transaction.onabort = () => reject(failure || transaction.error || new Error('备份恢复写入失败，图片与配方已撤销'));
   transaction.onerror = () => {};
   const artworks = transaction.objectStore('artworks');
   const recipes = transaction.objectStore('recipes');
@@ -391,7 +434,23 @@ async function restoreBackupData(data) {
   try {
   for (const record of [...plan.collectionPlan.additions, ...plan.collectionPlan.merges]) transaction.objectStore('collections').put(record);
   for (const record of plan.vibeRecords || []) transaction.objectStore('vibes').put(record);
-  for (const record of artworkMerges) artworks.put(record);
+  for (const record of artworkMerges) {
+    const previous = plan.artworkPlan.restoredRecipeLinks.get(record.id);
+    if (!previous) {
+      artworks.put(record);
+      continue;
+    }
+    const request = artworks.get(record.id);
+    request.onsuccess = () => {
+      const current = request.result;
+      if (!current || current.recipeId !== previous.recipeId || current.updatedAt !== previous.updatedAt) {
+        failure = new Error('恢复期间图片归属或资料已修改，请重新预览备份');
+        transaction.abort();
+        return;
+      }
+      artworks.put(record);
+    };
+  }
   let remaining = artworkAdditions.length;
   if (!remaining) writeRecipes();
   for (const artwork of artworkAdditions) {
@@ -430,6 +489,9 @@ async function restoreBackupData(data) {
 
 function showRestorePreview(data, plan) {
   pendingBackupImport = data;
+  $('restoreRecipeLinks').checked = false;
+  $('restoreRecipeLinksOption').hidden = !plan.stats.artworkRecipeLinkCount;
+  $('restoreRecipeLinksLabel').textContent = `按备份恢复 ${plan.stats.artworkRecipeLinkCount} 张已有图片的配方归属（会移动图片）`;
   $('restorePreviewStats').innerHTML = [
     ['新增', plan.stats.added], ['更新/补全', plan.stats.merged], ['跳过重复', plan.stats.skipped]
   ].map(([label, count]) => `<div class="restore-stat"><b>${count}</b><span>${label}</span></div>`).join('');
@@ -451,9 +513,10 @@ $('confirmRestorePreview').onclick = async () => {
   try {
     // Recompute against current data: another tab may have edited records while
     // the preview was open. Never apply a stale overwrite plan.
-    const restored = await restoreBackupData(pendingBackupImport);
+    const restored = await restoreBackupData(pendingBackupImport, $('restoreRecipeLinks').checked);
     closeDialog('restorePreviewDialog');
-    toast(`已合并 ${restored.artworkCount} 张图片、${restored.recipeCount} 份配方；更新/补全 ${restored.mergedCount} 项，跳过 ${restored.skippedCount} 项重复`);
+    const restoredLinks = restored.artworkRecipeLinksRestored ? `，已恢复 ${restored.artworkRecipeLinksRestored} 张已有图片的配方归属` : '';
+    toast(`已新增 ${restored.artworkCount} 张图片、${restored.recipeCount} 份配方；更新/补全 ${restored.mergedCount} 项，跳过 ${restored.skippedCount} 项重复${restoredLinks}`);
     pendingBackupImport = null;
   } catch (error) {
     toast(`恢复失败：${error.message}`);
