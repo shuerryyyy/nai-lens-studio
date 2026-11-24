@@ -228,7 +228,7 @@ async function validateGeneratedImage(blob) {
 async function downloadGeneratedImage(value) {
   const url = safeHttpUrl(value);
   if (!url) throw new Error('返回的图片链接不是 HTTP/HTTPS 地址');
-  const response = await fetch(url, { signal: generationController?.signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
+  const response = await fetch(url, { cache: 'no-store', signal: generationController?.signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
   if (!response.ok) throw new Error(`图片下载失败：HTTP ${response.status}`);
   return validateGeneratedImage(new Blob([await readLimitedResponse(response)]));
 }
@@ -306,6 +306,7 @@ $('generateBtn').onclick = async () => {
     if (controller.signal.aborted) throw new DOMException('已停止等待', 'AbortError');
     const response = await fetch(endpoint, {
       method: 'POST',
+      cache: 'no-store',
       signal: controller.signal,
       redirect: adapter ? 'error' : 'follow',
       headers: adapter ? NaiAdapters.headers(adapter,token) : { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, image/png, application/zip' },

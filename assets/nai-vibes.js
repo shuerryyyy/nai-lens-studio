@@ -64,7 +64,7 @@ async function prepareVibes(meta, signal, token = $('token').value.trim()) {
     let encoded = vibeEncoding(asset,meta.model,item.information);
     if (!encoded) {
       setStatus('正在准备 Vibe', 'run', `编码：${asset.name}；完成后将继续生图`);
-      const response = await fetch(encodeUrl, {method:'POST', signal, headers:{Authorization:`Bearer ${token}`, 'Content-Type':'application/json'}, body:JSON.stringify({image:asset.image.replace(/^data:[^;]+;base64,/, ''), model:meta.model, information_extracted:item.information})});
+      const response = await fetch(encodeUrl, {method:'POST', cache:'no-store', signal, headers:{Authorization:`Bearer ${token}`, 'Content-Type':'application/json'}, body:JSON.stringify({image:asset.image.replace(/^data:[^;]+;base64,/, ''), model:meta.model, information_extracted:item.information})});
       if (!response.ok) throw new Error(explainHttpError(response.status, await response.text()));
       if ((response.headers.get('content-type') || '').includes('json')) throw new Error('编码接口返回 JSON，预期官方二进制编码格式；请核对站点协议');
       const bytes = new Uint8Array(await readLimitedResponse(response, 8*1024*1024));
@@ -243,10 +243,11 @@ async function initVibes() {
   for(const id of ['endpoint','apiMode','apiPresetSelect'])$(id).addEventListener('change',()=>{$('vibeProxySupported').checked=false;$('vibeEncodeEndpoint').value='';});
   const updateViewport=()=>{
     const viewport=window.visualViewport;
-    const focused=document.activeElement?.matches('input,textarea,select');
+    const focused = document.activeElement?.matches('textarea, input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="number"], input[type="password"]');
     document.documentElement.style.setProperty('--nai-viewport-height',`${viewport?.height||innerHeight}px`);
     document.documentElement.style.setProperty('--nai-viewport-top',`${viewport?.offsetTop||0}px`);
-    document.documentElement.dataset.keyboardOpen=String(Boolean(focused&&viewport&&viewport.height<innerHeight*.75));
+    const keyboardOpen = focused && viewport && viewport.scale <= 1.05 && innerHeight - viewport.height >= 120;
+    document.documentElement.dataset.keyboardOpen = String(Boolean(keyboardOpen));
   };
   window.visualViewport?.addEventListener('resize',updateViewport);window.visualViewport?.addEventListener('scroll',updateViewport);
   window.addEventListener('resize',updateViewport);document.addEventListener('focusin',updateViewport);document.addEventListener('focusout',()=>requestAnimationFrame(updateViewport));updateViewport();

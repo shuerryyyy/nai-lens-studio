@@ -3,3 +3,7 @@ assets/*.js -text
 assets/*.css -text
 assets/*.ttf -text
 download/*.html -text
+index.html text eol=lf
+manifest.webmanifest text eol=lf
+pwa-shell.js text eol=lf
+assets/favicon.svg text eol=lf
